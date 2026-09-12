@@ -579,6 +579,46 @@ describe("external Chief mode", () => {
     expect(handoff).toContain("external-work.txt");
   });
 
+  it("embeds a bounded worker evidence summary in the external handoff", async () => {
+    const dirs = setup();
+    const workerEvidence = [
+      "UAT_EVIDENCE_BEGIN",
+      "Golden baseline: golden-payroll.xlsx sha256=abc123",
+      "关键规则：AD = AA + AC",
+      "关键数值：刘文剑 AC=68.77；范仙阳 AA=105.30",
+      "公式：AA/AD/AF/AK/AV 已复开验证",
+      "Machine Gate: 280 passed",
+      "新输出文件：工资表 (8).xlsx",
+      "reopen/formula verify: PASS",
+      "old UAT regression: none",
+      "remaining unknowns: none",
+      "UAT_EVIDENCE_END",
+    ].join("\n");
+    const result = await run(
+      dirs,
+      baseConfig({ chiefMode: "external", maxIterations: 1 }),
+      async (stage) => {
+        if (stage.name !== "worker") throw new Error("unexpected Chief call");
+        writeChange(dirs.workspaceDir, "evidence.txt");
+        return { text: workerEvidence, meta: {} };
+      },
+      async () => gate(true)
+    );
+    expect(result.state.status).toBe("WAITING_FOR_CHIEF");
+    const handoff = readFileSync(
+      join(result.runDir, "CHIEF_HANDOFF.md"),
+      "utf8"
+    );
+    expect(handoff).toContain(
+      "Golden baseline: golden-payroll.xlsx sha256=abc123"
+    );
+    expect(handoff).toContain("关键数值：刘文剑 AC=68.77；范仙阳 AA=105.30");
+    expect(handoff).toContain("新输出文件：工资表 (8).xlsx");
+    expect(handoff).toContain("old UAT regression: none");
+    expect(handoff).toContain("Worker output:");
+    expect(handoff.length).toBeLessThan(8_500);
+  });
+
   it("stops at WAITING_FOR_CHIEF after a Gate failure without retrying Worker", async () => {
     const dirs = setup();
     const calls: string[] = [];

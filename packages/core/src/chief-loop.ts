@@ -1486,7 +1486,7 @@ function writeExternalHandoff(args: {
       typeof raw.error === "string"
         ? raw.error
         : typeof raw.text === "string"
-          ? raw.text
+          ? summarizeWorkerEvidence(raw.text)
           : workerSummary;
   } catch {
     // The detailed artifact is still linked below.
@@ -1585,6 +1585,25 @@ function writeExternalHandoff(args: {
     handoffHash,
     workspaceFingerprint: workspaceFingerprint(args.current),
   };
+}
+
+/**
+ * Keep the external handoff self-contained enough for a Chief that cannot
+ * read the local run directory. Worker output can contain very large raw
+ * logs, so prefer the worker's final summary and evidence-bearing lines and
+ * cap the result before putting it in CHIEF_HANDOFF.md.
+ */
+function summarizeWorkerEvidence(raw: string): string {
+  const normalized = raw.replaceAll("\0", "").trim();
+  if (!normalized) return "(worker output was empty)";
+
+  const evidencePattern =
+    /summary|摘要|golden|baseline|基准|formula|公式|关键|value|数值|gate|验收|output|输出|reopen|复开|regression|回归|unknown|未知|remaining|待处理|final_grade|aa|ac|ad|af|ak|av|工资表|xlsx|run[:：]/i;
+  const lines = normalized.split(/\r?\n/);
+  const evidenceLines = lines.filter((line) => evidencePattern.test(line));
+  const selected = evidenceLines.length >= 2 ? evidenceLines : lines.slice(-80);
+  const summary = selected.join("\n");
+  return truncate(summary, 6_000);
 }
 
 function gateFailureSummary(gate: MachineGateResult): string {
