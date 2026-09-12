@@ -104,6 +104,19 @@ class FakePage {
       }, 700);
       return;
     }
+    if (this.responseMode === "replace-last") {
+      this.assistants[this.assistants.length - 1] = `${opening}${nonce}${closing}`;
+      return;
+    }
+    if (this.responseMode === "virtualized") {
+      this.assistants = [`${opening}${nonce}${closing}`];
+      return;
+    }
+    if (this.responseMode === "wrong-nonce") {
+      this.assistants.push(`${opening}${nonce}-wrong${closing}`);
+      return;
+    }
+    if (this.responseMode === "user-only") return;
     this.assistants.push(`${opening}${nonce}${closing}`);
   }
 }
@@ -142,6 +155,66 @@ test("GUI Bridge waits through a stable partial reply for the closing marker", a
   );
   assert.equal(result.ok, true);
   assert.equal(result.verdict.status, "OK");
+});
+
+test("GUI Bridge accepts a replaced assistant node with unchanged count", async () => {
+  const conversationUrl = "https://chatgpt.com/c/replaced-assistant";
+  const page = new FakePage(conversationUrl, "replace-last");
+  const browser = { contexts: () => [new FakeContext(page)] };
+  const result = await runGuiBridgeRoundtrip(
+    { cdpUrl: "http://127.0.0.1:9222", conversationUrl, timeoutMs: 2_000 },
+    { connectOverCDP: async () => browser, random: () => 0.55 }
+  );
+  assert.equal(result.ok, true);
+});
+
+test("GUI Bridge accepts a virtualized assistant list with a lower count", async () => {
+  const conversationUrl = "https://chatgpt.com/c/virtualized-assistant";
+  const page = new FakePage(conversationUrl, "virtualized");
+  page.assistants = ["old 1", "old 2", "old 3"];
+  const browser = { contexts: () => [new FakeContext(page)] };
+  const result = await runGuiBridgeRoundtrip(
+    { cdpUrl: "http://127.0.0.1:9222", conversationUrl, timeoutMs: 2_000 },
+    { connectOverCDP: async () => browser, random: () => 0.6 }
+  );
+  assert.equal(result.ok, true);
+});
+
+test("GUI Bridge ignores a user nonce when no assistant nonce exists", async () => {
+  const conversationUrl = "https://chatgpt.com/c/user-only-nonce";
+  const page = new FakePage(conversationUrl, "user-only");
+  const browser = { contexts: () => [new FakeContext(page)] };
+  await assert.rejects(
+    runGuiBridgeRoundtrip(
+      { cdpUrl: "http://127.0.0.1:9222", conversationUrl, timeoutMs: 250 },
+      { connectOverCDP: async () => browser, random: () => 0.65 }
+    ),
+    (error) => error.code === "ASSISTANT_REPLY_TIMEOUT"
+  );
+});
+
+test("GUI Bridge waits for a closing marker after an assistant nonce appears", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delayed-replaced-assistant";
+  const page = new FakePage(conversationUrl, "delayed-closing");
+  const browser = { contexts: () => [new FakeContext(page)] };
+  const result = await runGuiBridgeRoundtrip(
+    { cdpUrl: "http://127.0.0.1:9222", conversationUrl, timeoutMs: 2_000 },
+    { connectOverCDP: async () => browser, random: () => 0.7 }
+  );
+  assert.equal(result.ok, true);
+});
+
+test("GUI Bridge rejects an assistant response with the wrong nonce", async () => {
+  const conversationUrl = "https://chatgpt.com/c/wrong-assistant-nonce";
+  const page = new FakePage(conversationUrl, "wrong-nonce");
+  const browser = { contexts: () => [new FakeContext(page)] };
+  await assert.rejects(
+    runGuiBridgeRoundtrip(
+      { cdpUrl: "http://127.0.0.1:9222", conversationUrl, timeoutMs: 250 },
+      { connectOverCDP: async () => browser, random: () => 0.8 }
+    ),
+    (error) => error.code === "NONCE_MISMATCH"
+  );
 });
 
 test("GUI Bridge rejects a new assistant reply without a closing marker", async () => {
