@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -622,6 +628,21 @@ describe("external Chief mode", () => {
     expect(resumed.state.status).toBe("WAITING_FOR_CHIEF");
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain("fix the external gate finding");
+
+    writeFileSync(
+      join(resumed.runDir, "CHIEF_VERDICT.json"),
+      boundExternalVerdict(resumed.state, "PASS")
+    );
+    const completed = await runChiefLoop({
+      ...dirs,
+      config: baseConfig({ chiefMode: "external", maxIterations: 2 }),
+      resumeRunId: first.state.runId,
+      runAgent: async () => {
+        throw new Error("PASS after the second WAIT must not call Worker");
+      },
+      runGate: async () => gate(true),
+    });
+    expect(completed.state.status).toBe("PASS");
   });
 
   it("resumes PASS without calling Worker or Chief", async () => {
@@ -653,9 +674,13 @@ describe("external Chief mode", () => {
     });
     expect(resumed.state.status).toBe("PASS");
     expect(calls).toBe(0);
-    expect(
-      readFileSync(join(first.runDir, "CHIEF_VERDICT.json.consumed"), "utf8")
-    ).toContain('"verdict":"PASS"');
+    const consumedDir = join(first.runDir, "consumed");
+    const consumed = readdirSync(consumedDir);
+    expect(consumed).toHaveLength(1);
+    expect(consumed[0]).toContain(`iter-${first.state.iteration}.`);
+    expect(readFileSync(join(consumedDir, consumed[0]), "utf8")).toContain(
+      '"verdict":"PASS"'
+    );
   });
 
   it("does not apply the same external verdict twice", async () => {
@@ -698,6 +723,54 @@ describe("external Chief mode", () => {
     });
     expect(second.state.status).toBe("FAILED");
     expect(second.state.reason).toContain("not found");
+  });
+
+  it("rejects re-consuming the same verdict for the same iteration", async () => {
+    const dirs = setup();
+    const first = await run(
+      dirs,
+      baseConfig({ chiefMode: "external", maxIterations: 1 }),
+      async (stage) => {
+        if (stage.name !== "worker") throw new Error("unexpected Chief call");
+        writeChange(dirs.workspaceDir, "duplicate-verdict.txt");
+        return { text: "worker done", meta: {} };
+      },
+      async () => gate(true)
+    );
+    const statePath = join(first.runDir, "state.json");
+    const handoffPath = join(first.runDir, "CHIEF_HANDOFF.md");
+    const waitingState = readFileSync(statePath, "utf8");
+    const waitingHandoff = readFileSync(handoffPath, "utf8");
+    const verdict = boundExternalVerdict(first.state, "RETURN", "retry once");
+    writeFileSync(join(first.runDir, "CHIEF_VERDICT.json"), verdict);
+
+    await runChiefLoop({
+      ...dirs,
+      config: baseConfig({ chiefMode: "external", maxIterations: 1 }),
+      resumeRunId: first.state.runId,
+      runAgent: async () => {
+        throw new Error("simulate a process failure after consumption");
+      },
+      runGate: async () => gate(true),
+    });
+    writeFileSync(statePath, waitingState);
+    writeFileSync(handoffPath, waitingHandoff);
+    writeFileSync(join(first.runDir, "CHIEF_VERDICT.json"), verdict);
+
+    let calls = 0;
+    const duplicate = await runChiefLoop({
+      ...dirs,
+      config: baseConfig({ chiefMode: "external", maxIterations: 1 }),
+      resumeRunId: first.state.runId,
+      runAgent: async () => {
+        calls += 1;
+        throw new Error("duplicate verdict must stop before Worker");
+      },
+      runGate: async () => gate(true),
+    });
+    expect(duplicate.state.status).toBe("FAILED");
+    expect(duplicate.state.reason).toContain("already consumed");
+    expect(calls).toBe(0);
   });
 
   it("rejects an external verdict after the waiting workspace changes", async () => {

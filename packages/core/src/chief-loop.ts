@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
@@ -344,7 +345,11 @@ export async function runChiefLoop(
         "请根据最新 Machine Gate 结果重新提交 verdict"
       );
     }
-    const consumedError = consumeExternalVerdict(external.path);
+    const consumedError = consumeExternalVerdict(
+      external.path,
+      runDir,
+      decision
+    );
     if (consumedError) {
       return finish(
         state,
@@ -1326,13 +1331,33 @@ function loadExternalVerdict(
     : { error: `CHIEF_VERDICT.json is not valid external Chief JSON: ${path}` };
 }
 
-function consumeExternalVerdict(path: string | undefined): string | undefined {
+function consumeExternalVerdict(
+  path: string | undefined,
+  runDir: string,
+  verdict: ExternalChiefVerdict
+): string | undefined {
   if (!path) return "External Chief verdict path is missing";
-  const consumedPath = `${path}.consumed`;
+  const consumedDir = join(runDir, "consumed");
+  const consumedPath = join(
+    consumedDir,
+    `CHIEF_VERDICT.iter-${verdict.iteration}.${verdict.handoff_hash}.json`
+  );
   if (existsSync(consumedPath))
-    return `External Chief verdict was already consumed: ${path}`;
+    return `External Chief verdict was already consumed for iteration ${verdict.iteration}: ${path}`;
   try {
-    renameSync(path, consumedPath);
+    mkdirSync(consumedDir, { recursive: true });
+    try {
+      renameSync(path, consumedPath);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !("code" in error) ||
+        error.code !== "EXDEV"
+      )
+        throw error;
+      copyFileSync(path, consumedPath);
+      unlinkSync(path);
+    }
     return undefined;
   } catch (error) {
     return `Cannot consume external Chief verdict ${path}: ${
