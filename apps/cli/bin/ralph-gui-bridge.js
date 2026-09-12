@@ -197,7 +197,7 @@ export async function runGuiBridgeRoundtrip(config, dependencies = {}) {
   );
   await assertLoggedIn(page);
   const input = await locateInput(page);
-  const beforeReply = await latestAssistantText(page);
+  const beforeReply = await assistantTurnSnapshot(page);
   const message = GUI_BRIDGE_MESSAGE(nonce);
   try {
     await input.fill(message);
@@ -310,20 +310,23 @@ async function firstVisible(page, selectors) {
   return undefined;
 }
 
-async function latestAssistantText(page) {
+async function assistantTurnSnapshot(page) {
   for (const selector of ASSISTANT_SELECTORS) {
     const locator = page.locator(selector);
     try {
       const count = await locator.count();
       if (count > 0) {
-        const text = await locator.nth(count - 1).innerText();
-        if (text.trim()) return text;
+        return {
+          selector,
+          count,
+          latestText: await locator.nth(count - 1).innerText(),
+        };
       }
     } catch {
       // Try the next selector.
     }
   }
-  return "";
+  return { selector: ASSISTANT_SELECTORS[0], count: 0, latestText: "" };
 }
 
 async function stopButtonVisible(page) {
@@ -332,19 +335,25 @@ async function stopButtonVisible(page) {
 
 async function waitForCompletedAssistant(page, beforeReply, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  let last = beforeReply;
+  const selector = beforeReply.selector ?? ASSISTANT_SELECTORS[0];
+  const baselineCount = beforeReply.count ?? 0;
+  const assistant = page.locator(selector);
+  let last = beforeReply.latestText ?? "";
   let stableReads = 0;
   let sawNewReply = false;
   while (Date.now() < deadline) {
-    const current = await latestAssistantText(page);
-    if (current && current !== beforeReply) {
+    const count = await assistant.count();
+    if (count > baselineCount) {
+      const current = await assistant.nth(count - 1).innerText();
       sawNewReply = true;
       if (current === last) stableReads += 1;
       else {
         stableReads = 0;
         last = current;
       }
-      if (stableReads >= 2 && !(await stopButtonVisible(page))) return current;
+      // Text stability and the stop button are only auxiliary signals. The
+      // closing marker is the protocol's authoritative completion condition.
+      if (current.includes("<<<END_CHIEF_VERDICT_JSON>>>")) return current;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
