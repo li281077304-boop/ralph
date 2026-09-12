@@ -213,6 +213,7 @@ export async function runGuiBridgeRoundtrip(config, dependencies = {}) {
 
   const reply = await waitForCompletedAssistant(
     page,
+    nonce,
     beforeReply,
     config.timeoutMs
   );
@@ -333,33 +334,37 @@ async function stopButtonVisible(page) {
   return Boolean(await firstVisible(page, STOP_SELECTORS));
 }
 
-async function waitForCompletedAssistant(page, beforeReply, timeoutMs) {
+async function waitForCompletedAssistant(page, nonce, _beforeReply, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  const selector = beforeReply.selector ?? ASSISTANT_SELECTORS[0];
-  const baselineCount = beforeReply.count ?? 0;
-  const assistant = page.locator(selector);
-  let last = beforeReply.latestText ?? "";
-  let stableReads = 0;
-  let sawNewReply = false;
+  let sawNonce = false;
   while (Date.now() < deadline) {
-    const count = await assistant.count();
-    if (count > baselineCount) {
-      const current = await assistant.nth(count - 1).innerText();
-      sawNewReply = true;
-      if (current === last) stableReads += 1;
-      else {
-        stableReads = 0;
-        last = current;
+    for (const selector of ASSISTANT_SELECTORS) {
+      const assistant = page.locator(selector);
+      let count = 0;
+      try {
+        count = await assistant.count();
+      } catch {
+        continue;
       }
-      // Text stability and the stop button are only auxiliary signals. The
-      // closing marker is the protocol's authoritative completion condition.
-      if (current.includes("<<<END_CHIEF_VERDICT_JSON>>>")) return current;
+      for (let index = count - 1; index >= 0; index -= 1) {
+        let current;
+        try {
+          current = await assistant.nth(index).innerText();
+        } catch {
+          continue;
+        }
+        if (!current.includes(nonce)) continue;
+        sawNonce = true;
+        // The nonce and closing marker in an assistant-role node are the only
+        // authoritative completion signals. DOM count/order may be virtualized.
+        if (current.includes("<<<END_CHIEF_VERDICT_JSON>>>")) return current;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new GuiBridgeError(
-    sawNewReply ? ERROR_CODES.INCOMPLETE : ERROR_CODES.TIMEOUT,
-    sawNewReply
+    sawNonce ? ERROR_CODES.INCOMPLETE : ERROR_CODES.TIMEOUT,
+    sawNonce
       ? "Assistant reply did not reach a stable completed state"
       : "Assistant reply timed out"
   );
