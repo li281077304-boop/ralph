@@ -28,3 +28,12 @@ chief:
 worker:
   agent: codex
   model: gpt-5.6-terra
+
+# Optional external-Chief transport through an already attached Playwright
+# Extension session. Keep the token in a private environment file.
+gui_bridge:
+  enabled: false
+  conversation_url: https://chatgpt.com/c/REPLACE_WITH_FIXED_CHIEF_CONVERSATION
+  session: chrome
+  extension_env_file: ~/.config/playwright-mcp/env
+  timeout_ms: 180000

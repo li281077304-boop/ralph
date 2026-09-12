@@ -127,6 +127,14 @@ never faked locally. Verdict files are consumed after a successful resume, and a
 change invalidates the handoff. An invalid, stale, reused, or missing verdict stops explicitly
 and never falls back to Codex Chief.
 
+To transport the same handoff through an already attached Playwright Extension session, enable
+the optional `gui_bridge` block in [`config.example.yaml`](./config.example.yaml). The bridge
+sends the complete `CHIEF_HANDOFF.md` to the configured fixed ChatGPT conversation, accepts only
+the marked external-verdict JSON, writes it to the run directory, and reuses Ralph's normal
+resume validation. Attach, conversation, marker, identity, or verdict failures remain
+`WAITING_FOR_CHIEF` and never fall back to a local Codex Chief. Manual verdict-file placement
+remains available when `gui_bridge.enabled` is false.
+
 ### GUI Bridge first-time Chrome setup
 
 The one-shot GUI Bridge requires Chrome to expose a DevTools endpoint. Fully quit Chrome

@@ -22,6 +22,7 @@ import {
   loadChiefConfig,
   type ChiefAgentConfig,
   type ChiefConfig,
+  type ChiefGuiBridgeConfig,
   type ChiefMode,
 } from "./chief-config.js";
 import {
@@ -76,6 +77,7 @@ export type ChiefLoopConfig = {
   maxChangedPaths?: number;
   chief?: Partial<ChiefAgentConfig>;
   worker?: Partial<ChiefAgentConfig>;
+  guiBridge?: ChiefGuiBridgeConfig;
 };
 
 export type ChiefRunState = {
@@ -104,6 +106,18 @@ export type ChiefAgentRunner = (
   options?: RunStageOptions
 ) => Promise<{ text: string; meta: StageMeta }>;
 
+export type ExternalChiefBridgeContext = {
+  workspaceDir: string;
+  runDir: string;
+  handoffPath: string;
+  state: ChiefRunState;
+  config: ChiefLoopConfig;
+};
+
+export type ExternalChiefBridge = (
+  context: ExternalChiefBridgeContext
+) => Promise<{ verdictPath?: string; error?: string }>;
+
 export type ChiefLoopOptions = {
   workspaceDir: string;
   packageDir: string;
@@ -119,6 +133,7 @@ export type ChiefLoopOptions = {
   workerStage?: Stage;
   chiefStage?: Stage;
   runAgent?: ChiefAgentRunner;
+  externalChiefBridge?: ExternalChiefBridge;
   runGate?: (
     workspaceDir: string,
     options: MachineGateOptions
@@ -657,6 +672,30 @@ export async function runChiefLoop(
         "请查看 CHIEF_HANDOFF.md 并提供 CHIEF_VERDICT.json",
         "等待外部总工判断"
       );
+      if (config.guiBridge?.enabled && options.externalChiefBridge) {
+        const bridge = await options.externalChiefBridge({
+          workspaceDir: options.workspaceDir,
+          runDir,
+          handoffPath: join(runDir, "CHIEF_HANDOFF.md"),
+          state,
+          config,
+        });
+        if (bridge.error || !bridge.verdictPath) {
+          const error = bridge.error ?? "GUI Bridge did not produce a verdict";
+          atomicWrite(
+            join(runDir, "gui-bridge-error.json"),
+            `${JSON.stringify({ error, at: new Date().toISOString() }, null, 2)}\n`
+          );
+          state.reason = `GUI Bridge failed closed: ${error}`;
+          persist();
+          return { runDir, state };
+        }
+        return runChiefLoop({
+          ...options,
+          resumeRunId: state.runId,
+          verdictPath: bridge.verdictPath,
+        });
+      }
       return { runDir, state };
     }
 
@@ -1079,6 +1118,7 @@ function normalizeConfig(
       reasoning_effort:
         input.worker?.reasoning_effort ?? base.worker.reasoning_effort,
     },
+    guiBridge: input.guiBridge ?? base.gui_bridge,
   };
 }
 
@@ -1497,6 +1537,7 @@ function writeExternalHandoff(args: {
     `base HEAD: ${args.base.head}`,
     `current HEAD: ${args.current.head}`,
     `status: ${args.current.status || "clean"}`,
+    `workspace fingerprint: ${JSON.stringify(workspaceFingerprint(args.current))}`,
     "",
     "## 【Machine Gate】",
     args.gate.passed ? "总体结果：PASS" : "总体结果：FAIL",

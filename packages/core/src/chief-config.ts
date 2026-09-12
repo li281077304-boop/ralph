@@ -11,6 +11,14 @@ export type ChiefAgentConfig = {
   reasoning_effort?: string;
 };
 
+export type ChiefGuiBridgeConfig = {
+  enabled: boolean;
+  conversation_url: string;
+  session?: string;
+  extension_env_file?: string;
+  timeout_ms?: number;
+};
+
 export type ChiefConfig = {
   chief_mode: ChiefMode;
   max_iterations: number;
@@ -26,6 +34,7 @@ export type ChiefConfig = {
   max_changed_paths?: number;
   chief: ChiefAgentConfig;
   worker: ChiefAgentConfig;
+  gui_bridge?: ChiefGuiBridgeConfig;
 };
 
 const DEFAULT_CONFIG: ChiefConfig = {
@@ -105,7 +114,8 @@ function parseSimpleYaml(text: string): Record<string, unknown> {
     } else {
       result[key] = scalar(rawValue);
     }
-    if (["chief", "worker"].includes(key) && rawValue === "") result[key] = {};
+    if (["chief", "worker", "gui_bridge"].includes(key) && rawValue === "")
+      result[key] = {};
   }
   return result;
 }
@@ -151,6 +161,37 @@ function agentConfig(
     agent,
     model: model as string | undefined,
     reasoning_effort: reasoning as string | undefined,
+  };
+}
+
+function guiBridgeConfig(value: unknown): ChiefGuiBridgeConfig | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("gui_bridge must be a mapping");
+  const record = value as Record<string, unknown>;
+  if (typeof record.enabled !== "boolean")
+    throw new Error("gui_bridge.enabled must be a boolean");
+  if (typeof record.conversation_url !== "string" || !record.conversation_url)
+    throw new Error("gui_bridge.conversation_url must be a non-empty string");
+  if (record.session !== undefined && typeof record.session !== "string")
+    throw new Error("gui_bridge.session must be a string");
+  if (
+    record.extension_env_file !== undefined &&
+    typeof record.extension_env_file !== "string"
+  )
+    throw new Error("gui_bridge.extension_env_file must be a string");
+  const timeout = record.timeout_ms;
+  if (
+    timeout !== undefined &&
+    (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 1)
+  )
+    throw new Error("gui_bridge.timeout_ms must be a positive integer");
+  return {
+    enabled: record.enabled,
+    conversation_url: record.conversation_url,
+    session: record.session,
+    extension_env_file: record.extension_env_file,
+    timeout_ms: timeout,
   };
 }
 
@@ -228,5 +269,6 @@ export function loadChiefConfig(path?: string): ChiefConfig {
     );
   config.chief = agentConfig(parsed.chief, config.chief, "chief");
   config.worker = agentConfig(parsed.worker, config.worker, "worker");
+  config.gui_bridge = guiBridgeConfig(parsed.gui_bridge);
   return config;
 }

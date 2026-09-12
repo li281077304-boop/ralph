@@ -437,6 +437,117 @@ describe("Chief/Worker state machine", () => {
 });
 
 describe("external Chief mode", () => {
+  it("automatically resumes through a configured external GUI bridge", async () => {
+    const dirs = setup();
+    const calls: string[] = [];
+    let bridgeCalls = 0;
+    const result = await runChiefLoop({
+      ...dirs,
+      config: baseConfig({
+        chiefMode: "external",
+        maxIterations: 1,
+        guiBridge: {
+          enabled: true,
+          conversation_url: "https://chatgpt.com/c/fixed-chief",
+        },
+      }),
+      runAgent: async (stage) => {
+        calls.push(stage.name);
+        if (stage.name !== "worker")
+          throw new Error("GUI bridge must not call Chief");
+        writeChange(dirs.workspaceDir, "gui-pass.txt");
+        return { text: "worker done", meta: {} };
+      },
+      runGate: async () => gate(true),
+      externalChiefBridge: async (context) => {
+        bridgeCalls += 1;
+        expect(readFileSync(context.handoffPath, "utf8")).toContain(
+          "handoff_hash"
+        );
+        const verdictPath = join(context.runDir, "CHIEF_VERDICT.json");
+        writeFileSync(verdictPath, boundExternalVerdict(context.state, "PASS"));
+        return { verdictPath };
+      },
+    });
+    expect(result.state.status).toBe("PASS");
+    expect(bridgeCalls).toBe(1);
+    expect(calls).toEqual(["worker"]);
+  });
+
+  it("routes external GUI PATCH back to Worker, Gate, and a new review", async () => {
+    const dirs = setup();
+    let bridgeCalls = 0;
+    let workerRuns = 0;
+    const result = await runChiefLoop({
+      ...dirs,
+      config: baseConfig({
+        chiefMode: "external",
+        maxIterations: 2,
+        guiBridge: {
+          enabled: true,
+          conversation_url: "https://chatgpt.com/c/fixed-chief",
+        },
+      }),
+      runAgent: async (stage, prompt) => {
+        if (stage.name !== "worker")
+          throw new Error("GUI bridge must not call Chief");
+        workerRuns += 1;
+        expect(prompt).toContain(
+          workerRuns === 1 ? "implement task" : "small patch"
+        );
+        writeChange(dirs.workspaceDir, `gui-patch-${workerRuns}.txt`);
+        return { text: "worker done", meta: {} };
+      },
+      runGate: async () => gate(true),
+      externalChiefBridge: async (context) => {
+        bridgeCalls += 1;
+        const verdictPath = join(context.runDir, "CHIEF_VERDICT.json");
+        writeFileSync(
+          verdictPath,
+          boundExternalVerdict(
+            context.state,
+            bridgeCalls === 1 ? "PATCH" : "PASS",
+            bridgeCalls === 1 ? "small patch" : ""
+          )
+        );
+        return { verdictPath };
+      },
+    });
+    expect(result.state.status).toBe("PASS");
+    expect(bridgeCalls).toBe(2);
+    expect(workerRuns).toBe(2);
+  });
+
+  it("stays WAITING and records a GUI bridge failure without fallback", async () => {
+    const dirs = setup();
+    let calls = 0;
+    const result = await runChiefLoop({
+      ...dirs,
+      config: baseConfig({
+        chiefMode: "external",
+        maxIterations: 1,
+        guiBridge: {
+          enabled: true,
+          conversation_url: "https://chatgpt.com/c/fixed-chief",
+        },
+      }),
+      runAgent: async (stage) => {
+        calls += 1;
+        if (stage.name !== "worker") throw new Error("no local Chief fallback");
+        writeChange(dirs.workspaceDir, "gui-failure.txt");
+        return { text: "worker done", meta: {} };
+      },
+      runGate: async () => gate(true),
+      externalChiefBridge: async () => ({ error: "CONVERSATION_NOT_FOUND" }),
+    });
+    expect(result.state.status).toBe("WAITING_FOR_CHIEF");
+    expect(result.state.reason).toContain("GUI Bridge failed closed");
+    expect(calls).toBe(1);
+    expect(
+      readFileSync(join(result.runDir, "gui-bridge-error.json"), "utf8")
+    ).toContain("CONVERSATION_NOT_FOUND");
+  });
+
   it("runs Worker and Gate once, then waits without a Chief call", async () => {
     const dirs = setup();
     const calls: string[] = [];

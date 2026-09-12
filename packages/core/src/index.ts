@@ -5,6 +5,8 @@ export {
   runChiefLoop,
   type ChiefLoopConfig,
   type ChiefLoopOptions,
+  type ExternalChiefBridge,
+  type ExternalChiefBridgeContext,
   type ChiefRunResult,
   type ChiefRunState,
   type ChiefRunStatus,
@@ -20,6 +22,7 @@ export {
   loadChiefConfig,
   type ChiefConfig,
   type ChiefAgentConfig,
+  type ChiefGuiBridgeConfig,
   type ChiefMode,
 } from "./chief-config.js";
 export {

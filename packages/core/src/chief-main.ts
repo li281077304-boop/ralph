@@ -7,9 +7,16 @@ import {
   type ChiefConfig,
   type ChiefMode,
 } from "./chief-config.js";
-import { runChiefLoop, type ChiefLoopConfig } from "./chief-loop.js";
+import {
+  runChiefLoop,
+  type ChiefLoopConfig,
+  type ExternalChiefBridge,
+} from "./chief-loop.js";
 
-export type RunChiefOptions = { cliVersion?: string };
+export type RunChiefOptions = {
+  cliVersion?: string;
+  externalChiefBridge?: ExternalChiefBridge;
+};
 
 /** CLI entry used by apps/cli/bin/ralph-chief.js. */
 export async function runChief(
@@ -34,8 +41,8 @@ export async function runChief(
   const packageDir = resolve(here, "..");
   const result =
     flags.command === "resume"
-      ? await resumeChief(workspaceDir, packageDir, flags)
-      : await startChief(workspaceDir, packageDir, flags);
+      ? await resumeChief(workspaceDir, packageDir, flags, _options)
+      : await startChief(workspaceDir, packageDir, flags, _options);
   setExitCode(result.state.status);
 }
 
@@ -96,7 +103,8 @@ function parseChiefFlags(argv: string[]): ChiefFlags {
 async function startChief(
   workspaceDir: string,
   packageDir: string,
-  flags: ChiefFlags
+  flags: ChiefFlags,
+  options: RunChiefOptions
 ) {
   if (!flags.task) throw new Error("ralph-chief requires --task TASK.md");
   const taskPath = resolve(flags.task);
@@ -113,13 +121,15 @@ async function startChief(
     config,
     taskPath,
     acceptancePath: configPath,
+    externalChiefBridge: options.externalChiefBridge,
   });
 }
 
 async function resumeChief(
   workspaceDir: string,
   packageDir: string,
-  flags: ChiefFlags
+  flags: ChiefFlags,
+  options: RunChiefOptions
 ) {
   const runId = flags.runId!;
   const runDir = join(workspaceDir, ".ralph", "chief-runs", runId);
@@ -154,6 +164,7 @@ async function resumeChief(
     acceptancePath,
     resumeRunId: runId,
     verdictPath: flags.verdictPath,
+    externalChiefBridge: options.externalChiefBridge,
   });
 }
 
@@ -203,5 +214,6 @@ function toLoopConfig(
     maxChangedPaths: loaded?.max_changed_paths,
     chief: loaded?.chief,
     worker: loaded?.worker,
+    guiBridge: loaded?.gui_bridge,
   };
 }

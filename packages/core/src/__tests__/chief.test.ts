@@ -205,6 +205,30 @@ describe("Chief machine gate and Git Guard", () => {
     expect(config.worker.model).toBe("gpt-5.6-terra");
   });
 
+  it("loads the optional external Chief GUI bridge settings", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ralph-chief-gui-config-"));
+    const path = join(workspace, "ACCEPTANCE.yaml");
+    await writeFile(
+      path,
+      [
+        "chief_mode: external",
+        "gui_bridge:",
+        "  enabled: true",
+        "  conversation_url: https://chatgpt.com/c/fixed-chief",
+        "  session: chrome",
+        "  extension_env_file: ~/.config/playwright-mcp/env",
+        "  timeout_ms: 180000",
+      ].join("\n")
+    );
+    expect(loadChiefConfig(path).gui_bridge).toEqual({
+      enabled: true,
+      conversation_url: "https://chatgpt.com/c/fixed-chief",
+      session: "chrome",
+      extension_env_file: "~/.config/playwright-mcp/env",
+      timeout_ms: 180000,
+    });
+  });
+
   it("keeps sensitive data patterns forbidden by default", () => {
     expect(loadChiefConfig().forbidden_paths).toEqual(
       expect.arrayContaining(["real_data/", "*.xlsx", "*.xls"])
