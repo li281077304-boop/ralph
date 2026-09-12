@@ -343,7 +343,11 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
                 stageLog,
                 {
                   signal: stageAbort.signal,
-                  agent,
+                  // Stage configuration can select a provider/model without
+                  // teaching the generic loop about provider-specific flags.
+                  agent: stage.agent ?? agent,
+                  model: stage.model,
+                  reasoningEffort: stage.reasoningEffort,
                   codexUserConfig,
                   skillsHostDir: join(packageDir, "templates", "skills"),
                 }

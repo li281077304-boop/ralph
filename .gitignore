@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 .ralph-tmp/
+.ralph/chief-runs/
 .ghafk-prompt-*.md
 .pnpm-store/
 .worktrees/

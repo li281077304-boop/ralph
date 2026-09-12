@@ -43,6 +43,13 @@ export type RunStageOptions = {
   signal?: AbortSignal;
   agent?: AgentName;
   codexUserConfig?: boolean;
+  /** Provider-neutral overrides resolved from the current stage. */
+  model?: string;
+  reasoningEffort?: string;
+  /** Mount the target workspace read-only (used by independent audit stages). */
+  readOnlyWorkspace?: boolean;
+  /** Explicitly disable the privileged host Docker socket for an audit stage. */
+  dockerSocket?: "auto" | "off";
   /** Host dir of the shipped skills (<core>/templates/skills); mounted read-only when it exists. */
   skillsHostDir?: string;
 };
@@ -147,8 +154,8 @@ function parseDockerHost(raw: string | undefined): string | null {
  * sandbox so Testcontainers (and any other client of the Docker API) inside
  * the container can spawn sibling containers on the host daemon.
  *
- * - Default: ON when a socket is detected by detectDockerSocketPath().
- * - Opt-out: RALPH_DOCKER_SOCK=0
+ * - Default: OFF, even when a socket is detected.
+ * - Opt-in: RALPH_DOCKER_SOCK=1
  * - Explicit path: RALPH_DOCKER_SOCK_PATH=/path/to/docker.sock
  *
  * Group fixup: the socket inside the sandbox is owned by a privileged group
@@ -165,11 +172,12 @@ function parseDockerHost(raw: string | undefined): string | null {
  * Security note: mounting docker.sock grants the sandbox root-equivalent
  * access to the host Docker daemon. The AFK loop already runs with
  * --permission-mode bypassPermissions, so the blast radius is effectively
- * "anything docker can do on this host". Disable via RALPH_DOCKER_SOCK=0
- * when running untrusted prompts.
+ * "anything docker can do on this host". Leave the default off for untrusted
+ * prompts and opt in only with RALPH_DOCKER_SOCK=1.
  */
 export function resolveDockerSocketMount(): string[] | null {
-  if (process.env.RALPH_DOCKER_SOCK === "0") return null;
+  // Docker access is privileged. Opt in explicitly for Testcontainers.
+  if (process.env.RALPH_DOCKER_SOCK !== "1") return null;
   const sockPath = detectDockerSocketPath();
   if (!sockPath) return null;
 
@@ -559,7 +567,7 @@ export async function runStage(
       "--rm",
       "-i",
       "-v",
-      `${workspaceDir}:${CONTAINER_WORKSPACE}`,
+      `${workspaceDir}:${CONTAINER_WORKSPACE}${options.readOnlyWorkspace ? ":ro" : ""}`,
       "-w",
       CONTAINER_WORKSPACE,
       "-e",
@@ -577,13 +585,14 @@ export async function runStage(
     args.push(...skillsArgs);
     args.push(...resolveAgentVolumeArgs(adapter));
 
-    const sockMount = resolveDockerSocketMount();
+    const sockMount =
+      options.dockerSocket === "off" ? null : resolveDockerSocketMount();
     if (sockMount) {
       if (!dockerSockWarned) {
         dockerSockWarned = true;
         const sockPath = detectDockerSocketPath() ?? "docker.sock";
         process.stderr.write(
-          `${red(SYM.bullet)} ${bold("docker.sock mounted")} ${dim(`(${sockPath}) — the sandbox has root-equivalent access to the host Docker daemon. Disable with RALPH_DOCKER_SOCK=0. See SECURITY.md.`)}\n`
+          `${red(SYM.bullet)} ${bold("docker.sock mounted")} ${dim(`(${sockPath}) — the sandbox has root-equivalent access to the host Docker daemon. Leave RALPH_DOCKER_SOCK unset or set it to 0 to disable. See SECURITY.md.`)}\n`
         );
       }
       args.push(...sockMount);
@@ -591,7 +600,10 @@ export async function runStage(
 
     // Container-local `node_modules`, so an install inside the sandbox never
     // rewrites the bind-mounted host tree with a Linux one (#128).
-    const volumes = resolveSandboxVolumes(workspaceDir);
+    // A read-only reviewer cannot safely receive writable node_modules mounts.
+    const volumes = options.readOnlyWorkspace
+      ? []
+      : resolveSandboxVolumes(workspaceDir);
     if (volumes.length > 0) {
       await ensureSandboxVolumes(volumes, options);
       args.push(...sandboxRunArgs(volumes));
@@ -603,7 +615,9 @@ export async function runStage(
       ...adapter.buildCommand({
         stage,
         promptInstruction,
-        rawModel: process.env.RALPH_MODEL,
+        rawModel: options.model ?? process.env.RALPH_MODEL,
+        reasoningEffort:
+          options.reasoningEffort ?? process.env.RALPH_REASONING_EFFORT,
         codexUserConfig: options.codexUserConfig ?? false,
         home,
         skillsMounted: skillsArgs.length > 0,

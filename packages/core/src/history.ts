@@ -290,10 +290,12 @@ export function openHistory(opts: OpenHistoryOptions): HistoryWriter {
 
   const rawBranch = currentBranch(workspaceDir);
   const branch = rawBranch ? sanitizeBranch(rawBranch) : undefined;
-  const filePath = join(
-    historyDir,
-    historyFileName(fileTimestamp(now), bin, branch)
-  );
+  const baseName = historyFileName(fileTimestamp(now), bin, branch);
+  let filePath = join(historyDir, baseName);
+  let collision = 2;
+  while (existsSync(filePath)) {
+    filePath = join(historyDir, `${baseName.slice(0, -3)}-${collision++}.md`);
+  }
 
   writeFileSync(
     filePath,

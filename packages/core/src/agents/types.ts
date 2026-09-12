@@ -19,6 +19,8 @@ export type AgentCommandContext = {
   stage: Stage;
   promptInstruction: string;
   rawModel: string | undefined;
+  /** Provider-neutral stage reasoning setting; adapters ignore it if unsupported. */
+  reasoningEffort?: string;
   codexUserConfig: boolean;
   /** Host home dir (HOME || USERPROFILE); "" when neither is set. */
   home: string;

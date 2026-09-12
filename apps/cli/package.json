@@ -27,7 +27,8 @@
   ],
   "bin": {
     "ralph-afk": "./bin/ralph-afk.js",
-    "ralph-ghafk": "./bin/ralph-ghafk.js"
+    "ralph-ghafk": "./bin/ralph-ghafk.js",
+    "ralph-chief": "./bin/ralph-chief.js"
   },
   "files": [
     "bin",

@@ -257,14 +257,21 @@ export type CodexModelResolution = {
 
 export function resolveCodexModel(
   rawModel: string | undefined,
-  codexUserConfig: boolean
+  codexUserConfig: boolean,
+  rawReasoningEffort?: string
 ): CodexModelResolution {
+  const explicitReasoning = rawReasoningEffort?.trim();
   const explicit = rawModel?.trim();
   if (explicit) {
     return {
       model: explicit,
       modelSource: "RALPH_MODEL",
-      reasoningSource: codexUserConfig ? "user config" : "Codex CLI default",
+      reasoningEffort: explicitReasoning,
+      reasoningSource: explicitReasoning
+        ? "Ralph default"
+        : codexUserConfig
+          ? "user config"
+          : "Codex CLI default",
     };
   }
   if (codexUserConfig) {
@@ -276,7 +283,7 @@ export function resolveCodexModel(
   return {
     model: DEFAULT_CODEX_MODEL,
     modelSource: "Ralph default",
-    reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
+    reasoningEffort: explicitReasoning ?? DEFAULT_CODEX_REASONING_EFFORT,
     reasoningSource: "Ralph default",
   };
 }
@@ -318,7 +325,8 @@ export function buildCodexArgs(context: AgentCommandContext): string[] {
   }
   const resolution = resolveCodexModel(
     context.rawModel,
-    context.codexUserConfig
+    context.codexUserConfig,
+    context.reasoningEffort
   );
   if (resolution.model) {
     args.push("--model", resolution.model);

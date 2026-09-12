@@ -6,11 +6,12 @@ an iterating implementer → reviewer loop inside an ephemeral Docker sandbox.
 
 This package is the engine: the iteration loop driver, the Docker runner + NDJSON stream
 renderer, the prompt-template renderer, and the stage registry. The user-facing CLI lives in
-**[`@daonhan/ralph`](https://www.npmjs.com/package/@daonhan/ralph)** (`ralph-afk` / `ralph-ghafk`).
+**[`@daonhan/ralph`](https://www.npmjs.com/package/@daonhan/ralph)** (`ralph-afk` /
+`ralph-ghafk` / `ralph-chief`).
 
-> **Security:** Ralph runs the selected agent without interactive approval inside the sandbox
-> and, by default, bind-mounts the host Docker socket (root-equivalent host access). Point it
-> only at repositories and prompts you trust. See the repo's
+> **Security:** Ralph runs the selected agent without interactive approval inside the sandbox.
+> The host Docker socket is disabled by default; set `RALPH_DOCKER_SOCK=1` only for trusted
+> projects that need Testcontainers. See the repo's
 > [SECURITY.md](https://github.com/daonhan/ralph/blob/main/SECURITY.md).
 
 ## Install
@@ -49,6 +50,10 @@ including isolated configuration, `--codex-user-config`, and model precedence.
 Public surface: `runAfk`, `runGhAfk`, `AgentName`, `AgentSelection`,
 `AgentSelectionSource`, `runLoop`, `LoopOptions`, `STAGES`, `Stage`, `renderTemplate`,
 `RenderOptions`, `RenderVars`, `ensureImage`, `runStage`.
+
+The opt-in `runChiefLoop` profile also supports `chiefMode: "external"`: it runs only the
+Worker and non-AI Machine Gate, persists `WAITING_FOR_CHIEF` plus `CHIEF_HANDOFF.md`, and
+resumes from a strict external `CHIEF_VERDICT.json` without falling back to a local Chief.
 Subpath exports: `./loop`, `./runner`, `./stages`.
 
 The `templates/` directory (prompt playbooks + the `ralph-sandbox` `Dockerfile`) ships in the

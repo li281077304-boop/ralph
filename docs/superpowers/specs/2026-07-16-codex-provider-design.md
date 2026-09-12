@@ -326,8 +326,8 @@ The existing Ralph threat model continues to apply:
 Documentation must explicitly state that ~/.codex/auth.json is a secret and
 that selecting isolated configuration does not hide credentials from the
 agent; it only prevents personal config, MCP, hook, and model settings from
-loading. RALPH_DOCKER_SOCK=0 remains the control for removing host Docker
-daemon access.
+loading. The host Docker socket is disabled by default; RALPH_DOCKER_SOCK=1
+is an explicit opt-in for Testcontainers.
 
 Inherited Codex configuration may reference host-only paths or commands that
 do not exist in the Linux image. A required MCP server or hook failure is a

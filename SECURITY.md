@@ -32,13 +32,12 @@ The trust boundary is:
   pulls **public GitHub issues** — text authored by strangers — into that agent. Do not point it
   at a repo whose open issues you have not vetted.
 
-- **The host Docker socket is bind-mounted by default**, which grants the sandbox
+- **The host Docker socket is disabled by default.** Set `RALPH_DOCKER_SOCK=1` only for a
+  trusted project that requires Testcontainers. When enabled, the mount grants the sandbox
   **root-equivalent access to the host Docker daemon** (it can start a sibling container that
-  bind-mounts the host filesystem as root). This is on so Testcontainers inside the sandbox can
-  spawn sibling containers. **Disable it with `RALPH_DOCKER_SOCK=0`** when running anything you
-  do not fully trust. Disabling it removes host-Docker control, but persistent host-write
-  exposure still includes the bind-mounted workspace and, for Claude, the read-write
-  credential store. `~/.config/gh` remains read-only.
+  bind-mounts the host filesystem as root). Leaving it disabled removes host-Docker control,
+  but persistent host-write exposure still includes the bind-mounted workspace and, for Claude,
+  the read-write credential store. `~/.config/gh` remains read-only.
 
 - **Selected-provider host credentials are bind-mounted.** Claude mounts
   `~/.claude` and `~/.claude.json` read-write; the agent can read or overwrite
@@ -66,7 +65,7 @@ The trust boundary is:
 
 ### Reducing blast radius
 
-- Set `RALPH_DOCKER_SOCK=0` unless you specifically need Testcontainers.
+- Leave the default socket setting disabled. Set `RALPH_DOCKER_SOCK=1` only when you specifically need Testcontainers.
 - Run Ralph on a disposable VM / dedicated machine, not your primary workstation, for untrusted
   inputs.
 - Review open issues before running `ralph-ghafk`.

@@ -4,15 +4,17 @@ CLI for **[Ralph](https://github.com/daonhan/ralph)** — a harness that drives 
 default, or Codex when selected with `--agent codex`, against a target repository in an
 iterating implementer → reviewer loop inside an ephemeral Docker sandbox.
 
-Exposes two bin entries (thin wrappers over
+Exposes three bin entries (thin wrappers over
 **[`@daonhan/ralph-core`](https://www.npmjs.com/package/@daonhan/ralph-core)**):
 
 - **`ralph-afk`** — plan/PRD-driven loop. Iterates until the agent emits `<promise>NO MORE TASKS</promise>`.
 - **`ralph-ghafk`** — GitHub-issue-driven loop. Pulls open issues and lets the agent pick the next task.
+- **`ralph-chief`** — opt-in Chief/Worker loop. A Chief plans and audits, a Worker edits, and
+  non-AI machine gates decide whether the loop can advance.
 
-> **Security:** Ralph runs the selected agent without interactive approval inside the sandbox
-> and, by default, bind-mounts the host Docker socket (root-equivalent host access). Point it
-> only at repositories and prompts you trust. See
+> **Security:** Ralph runs the selected agent without interactive approval inside the sandbox.
+> The host Docker socket is disabled by default; set `RALPH_DOCKER_SOCK=1` only for trusted
+> projects that need Testcontainers. See
 > [SECURITY.md](https://github.com/daonhan/ralph/blob/main/SECURITY.md).
 
 ## Install
@@ -27,6 +29,9 @@ npm i -g @daonhan/ralph
 cd /path/to/your/workspace
 ralph-afk "<plan-and-prd>" 5      # plan/PRD loop
 ralph-ghafk 5                     # GitHub-issue loop
+ralph-chief --repo /path/to/repo --task /path/to/TASK.md --config /path/to/ACCEPTANCE.yaml
+ralph-chief run --chief-mode external --repo /path/to/repo --task /path/to/TASK.md --config /path/to/ACCEPTANCE.yaml
+ralph-chief resume <run-id> --repo /path/to/repo
 ralph-afk --agent codex "<plan-and-prd>" 5
 ralph-ghafk --agent codex 5
 ralph-afk --help                  # flags, env vars

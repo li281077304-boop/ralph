@@ -9,12 +9,12 @@ Ralph drives Claude Code by default, or Codex when selected with
 `--agent codex`, against a target repository in an iterating implementer →
 reviewer pipeline isolated inside a custom Docker image.
 
-> ⚠️ **Security:** Ralph runs the selected agent without interactive approval inside the sandbox (`--permission-mode bypassPermissions` for Claude; `--dangerously-bypass-approvals-and-sandbox` for Codex) and, **by default, bind-mounts the host Docker socket — granting root-equivalent access to the host Docker daemon.** Point it only at repositories, plans, and GitHub issues you trust. Disable the socket mount with `RALPH_DOCKER_SOCK=0`. See **[SECURITY.md](./SECURITY.md)** for the full threat model.
+> ⚠️ **Security:** Ralph runs the selected agent without interactive approval inside the sandbox (`--permission-mode bypassPermissions` for Claude; `--dangerously-bypass-approvals-and-sandbox` for Codex). The host Docker socket is **disabled by default**; set `RALPH_DOCKER_SOCK=1` only for trusted projects that need Testcontainers. Enabling it grants root-equivalent access to the host Docker daemon. See **[SECURITY.md](./SECURITY.md)** for the full threat model.
 
 > **New here?** Start with **[QUICKSTART.md](./QUICKSTART.md)** (zero-to-first-loop). Hacking on Ralph itself → **[CONTRIBUTING.md](./CONTRIBUTING.md)**. Internals → **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)**. Background / design walkthrough → **[The Ralph AFK Stack, Explained](https://daonhan.substack.com/p/the-ralph-afk-stack-explained)** (Substack).
 
 - **[`@daonhan/ralph-core`](./packages/core)** — library: iteration loop, docker runner, template renderer, stage registry. Importable from any Node project.
-- **[`@daonhan/ralph`](./apps/cli)** — CLI: exposes `ralph-afk` and `ralph-ghafk` bin entries. Depends on `@daonhan/ralph-core`.
+- **[`@daonhan/ralph`](./apps/cli)** — CLI: exposes `ralph-afk`, `ralph-ghafk`, and the opt-in `ralph-chief` bin entries. Depends on `@daonhan/ralph-core`.
 
 Two AFK entry points (both installed globally after `npm i -g @daonhan/ralph`):
 
@@ -30,10 +30,10 @@ Agent playbooks: [`packages/core/templates/prompt.md`](./packages/core/templates
 ## Architecture (AFK loops)
 
 ```
-ralph-afk / ralph-ghafk               (bin entries from @daonhan/ralph, on PATH after `npm i -g`)
+ralph-afk / ralph-ghafk / ralph-chief  (bin entries from @daonhan/ralph, on PATH after `npm i -g`)
    │
    ▼
-@daonhan/ralph (CLI, apps/cli)        bin: ralph-afk, ralph-ghafk; scripts: afk.sh, ghafk.sh shims
+@daonhan/ralph (CLI, apps/cli)        bin: ralph-afk, ralph-ghafk, ralph-chief; scripts: afk.sh, ghafk.sh shims
    │ imports
    ▼
 @daonhan/ralph-core (packages/core)
@@ -50,6 +50,83 @@ docker run ralph-sandbox <selected-agent> …
 Each iteration runs the stage chain `[implementer, reviewer]`. The implementer is the "gate": if it emits `<promise>NO MORE TASKS</promise>`, the loop exits before the reviewer runs.
 
 Prompt templates expand six tag forms before each stage runs, in order — `@include:` (inline a file, no shell), `@spill[?]:` (run a command, write its output to a side file the agent `Read`s), `` !?`cmd|||fallback` `` (try-shell), `` !`cmd` `` (host shell), `{{ INPUTS }}` (the entry CLI's input arg — the plan/PRD string for `ralph-afk`, empty for `ralph-ghafk`), and `{{ HISTORY }}` (the last few stage outcomes from `.ralph/history/`, injected into the implementer prompt). Full semantics under [Change the template syntax](#change-the-template-syntax); the runtime model lives in [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+
+## Chief/Worker execution profile
+
+The Chief/Worker profile keeps the same local, Git-backed safety model while making the roles explicit: a Chief turns the task into a bounded Worker assignment, the Worker edits the repository, machine gates run independently, and the Chief reviews the evidence. A Worker report is never treated as proof that a gate passed.
+
+The short status card printed for a run is intentionally readable:
+
+```text
+【总工进展】
+
+当前目标：实现订单导出
+现在在干什么：CHIEF_REVIEW
+为什么：Worker 已完成，正在审计机器证据
+机器验收：PASS
+总工判断：等待最终审计
+风险：无新增风险
+需要你做什么：无需操作
+下一步：Chief 返回 PASS 或下一轮施工任务
+```
+
+Terminal outcomes are similarly compact: `PASS`, `RETURN` (the Chief asks for a bounded follow-up), `PATCH` (a review patch changed the tree and gates/review must run again), `HUMAN_REQUIRED`, `FAILED`, `MAX_ITERATIONS`, or `TOKEN_BUDGET_EXCEEDED`. A human pause includes a decision card rather than silently guessing:
+
+```text
+【需要你拍板】
+
+问题：Which retention policy should this migration use?
+证据：.ralph/chief-runs/<run-id>/iterations/02/
+GPT 总工判断：现有代码与两份政策文件冲突
+推荐：选择组织已确认的保留期限
+选项：
+A 90 days
+B 365 days
+C 查看更多证据
+```
+
+The acceptance contract is kept outside the Worker prompt. `TASK.md`, `ACCEPTANCE.yaml`/`ACCEPTANCE.yml`, `CHIEF.md`, and `DECISIONS.md` are protected inputs; changing them is a Git Guard violation that stops the run. Reviewers must return a structured verdict. `RETURN` keeps the task in the loop with its context; `PATCH` invalidates the previous gate/review evidence and forces both to run again; `HUMAN_REQUIRED` persists the question and stops without committing or pushing.
+
+### Chief/Worker configuration
+
+The exact config keys are shown in the checked-in example for the current release. The important controls are bounded iterations, a token budget, independent gate commands, per-stage model settings, and Git Guard limits for unexpected diff growth. Keep the machine acceptance command in the config, not in a model-generated file. A minimal profile looks like:
+
+```yaml
+max_iterations: 6
+max_total_tokens: 300000
+chief_mode: codex # or external
+chief:
+  agent: codex
+  model: gpt-5.6-sol
+  reasoning_effort: high
+worker:
+  agent: codex
+  model: gpt-5.6-terra
+commands:
+  - pnpm -r typecheck
+  - pnpm -r test
+```
+
+Run it with `ralph-chief --repo /path/to/repo --task /path/to/TASK.md --config /path/to/ACCEPTANCE.yaml` and inspect the generated `.ralph/chief-runs/<run-id>/` evidence directory. Docker socket access is disabled by default in the Chief/Worker profile; opt in only for a trusted project that genuinely needs sibling containers. The profile does not use GUI automation, clipboard automation, browser clicks, or ChatGPT/Codex app windows, and it does not automatically commit or push.
+
+For ordinary development where ChatGPT is the external Chief, set
+`chief_mode: external` (or pass `--chief-mode external`). Ralph runs the Worker and
+Machine Gate once, then stops at `WAITING_FOR_CHIEF` without calling a local Chief model.
+Read `.ralph/chief-runs/<run-id>/CHIEF_HANDOFF.md`, save the external decision as
+`CHIEF_VERDICT.json`, and resume with:
+
+```bash
+ralph-chief resume <run-id> --repo /path/to/repo
+```
+
+The external verdict must be strict JSON with `PASS`, `PATCH`, `RETURN`, or
+`HUMAN_REQUIRED`. `PATCH` and `RETURN` must include a `worker_task`; external Chief code
+changes are never faked locally. An invalid or missing verdict stops explicitly and never
+falls back to Codex Chief.
+
+### Upstream basics
+
+This repository is based on the upstream Ralph loop. Keep upstream-compatible changes small and documented: preserve the first-stage gate invariant, the provider adapter boundary, the `.ralph/history/` ownership rule, and the existing CLI entry points. When syncing upstream, review the diff around `packages/core/src/loop.ts`, `runner.ts`, `agents/`, `stages.ts`, templates, and security documentation before resolving conflicts. Run `pnpm -r typecheck` and `pnpm -r test` after the sync; do not copy generated `dist/` output or local run artifacts into the branch.
 
 ---
 
@@ -552,7 +629,7 @@ npx -y @daonhan/ralph ralph-afk "<plan-and-prd>" 5
 | `RALPH_IMAGE_TAG`            | _(legacy)_                                                         | Deprecated alias for `RALPH_IMAGE`. Honored if `RALPH_IMAGE` unset.                                                                                                                                                                                                                                           |
 | `RALPH_AGENT`                | `claude`                                                           | Agent fallback when `--agent` is absent: `claude` or `codex`.                                                                                                                                                                                                                                                 |
 | `RALPH_RESULT_GRACE_MS`      | `30000`                                                            | Milliseconds to wait after the provider completion event before force-killing a docker child that fails to exit on its own. `0` disables the timer (original wait-forever behavior). Invalid values (non-finite, negative) fall back to the default.                                                          |
-| `RALPH_DOCKER_SOCK`          | _(on if a socket is found)_                                        | Set to `0` to disable bind-mounting the host Docker socket into the sandbox. Mounted by default so Testcontainers inside the container can spawn sibling containers — this grants the sandbox **root-equivalent access to the host Docker daemon**. Disable when running untrusted prompts.                   |
+| `RALPH_DOCKER_SOCK`          | `0` (off)                                                          | Set to `1` to opt in to bind-mounting the host Docker socket into the sandbox. Testcontainers can then spawn sibling containers, but this grants the sandbox **root-equivalent access to the host Docker daemon**.                                                                                            |
 | `RALPH_DOCKER_SOCK_PATH`     | _(auto-detected)_                                                  | Explicit host `docker.sock` path. Auto-detection (when unset) tries `DOCKER_HOST` (`unix://` only), then `/var/run/docker.sock`, Docker Desktop, Colima, Rancher Desktop, and rootless Docker/Podman socket locations.                                                                                        |
 | `RALPH_ISOLATE_NODE_MODULES` | _(on except Linux)_                                                | `0` shares the bind-mounted host `node_modules/` with the sandbox; `1` isolates on Linux too. Otherwise the sandbox gets container-local `node_modules` volumes at every package directory plus a shared package-manager store volume, so an install inside the container never rewrites the host tree.       |
 | `RALPH_CLAUDE_UPDATE`        | _(on)_                                                             | `0` skips the `claude update` every Claude stage runs before its own command **and** the `ralph-claude-home` volume mount that caches the updated CLI across containers, so the stage runs the image's baked CLI. Any other value keeps both. Ignored for `--agent codex`.                                    |

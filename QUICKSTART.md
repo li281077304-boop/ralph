@@ -4,7 +4,7 @@ Zero-to-first-loop for a brand-new user who just wants to run Ralph against thei
 
 Ralph drives Claude Code by default, or Codex when selected with `--agent codex`, against your repo in an iterating implementer → reviewer loop isolated inside an ephemeral Docker sandbox.
 
-> ⚠️ **Before you run it:** Ralph runs the selected agent without interactive approval (`--permission-mode bypassPermissions` for Claude; `--dangerously-bypass-approvals-and-sandbox` for Codex) and, by default, bind-mounts the host Docker socket (**root-equivalent access to the host Docker daemon**). Only run it against repos, plans, and issues you trust; set `RALPH_DOCKER_SOCK=0` to disable the socket mount. Full threat model in [SECURITY.md](./SECURITY.md).
+> ⚠️ **Before you run it:** Ralph runs the selected agent without interactive approval (`--permission-mode bypassPermissions` for Claude; `--dangerously-bypass-approvals-and-sandbox` for Codex). The host Docker socket is disabled by default; only set `RALPH_DOCKER_SOCK=1` for a trusted project that needs Testcontainers, because that grants root-equivalent access to the host Docker daemon. Full threat model in [SECURITY.md](./SECURITY.md).
 
 ## 1. Prerequisites
 
@@ -19,7 +19,8 @@ Ralph drives Claude Code by default, or Codex when selected with `--agent codex`
 npm i -g @daonhan/ralph
 ```
 
-Both bins — `ralph-afk` and `ralph-ghafk` — land on your `PATH`.
+The legacy bins — `ralph-afk` and `ralph-ghafk` — land on your `PATH`. The opt-in
+`ralph-chief` profile is documented in the main README.
 
 ## 3. Get the sandbox image
 

@@ -13,7 +13,7 @@ Ralph ships as a pnpm monorepo (Node >= 20, pnpm >= 9, root `packageManager pnpm
 | Component             | Path                      | Version | What it is                                                                                                                                                                        |
 | --------------------- | ------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@daonhan/ralph-core` | `packages/core`           | 0.6.1   | Library: loop driver, docker runner, template renderer, stage registry, AFK machinery. ESM, TS → `dist/`.                                                                         |
-| `@daonhan/ralph`      | `apps/cli`                | 0.6.1   | CLI exposing `ralph-afk` and `ralph-ghafk` bin entries. Hand-written JS bins, **no build step**, depends on core via `workspace:^`.                                               |
+| `@daonhan/ralph`      | `apps/cli`                | 0.6.1   | CLI exposing `ralph-afk`, `ralph-ghafk`, and opt-in `ralph-chief` bin entries. Hand-written JS bins, **no build step**, depends on core via `workspace:^`.                        |
 | `ralph-sandbox`       | `packages/core/templates` | 0.2.1   | Synthetic component for the Docker image (`docker.io/daonhan/ralph-sandbox:latest`). Built from [`../packages/core/templates/Dockerfile`](../packages/core/templates/Dockerfile). |
 
 Both packages are **ESM only** (`"type": "module"`). Relative imports inside [`../packages/core/src`](../packages/core/src) end in `.js` (compiled-output extension required by `moduleResolution: NodeNext`).
@@ -25,7 +25,7 @@ The harness drives a selectable Claude Code or Codex CLI against a target reposi
 ## End-to-end data flow
 
 ```
-ralph-afk / ralph-ghafk           bin (apps/cli/bin/*.js → import { runAfk|runGhAfk })
+ralph-afk / ralph-ghafk / chief   bin (apps/cli/bin/*.js → import { runAfk|runGhAfk|runChief })
         │
         ▼
 runAfk / runGhAfk                 (main.ts / gh-main.ts → runBin in run-bin.ts)
@@ -52,6 +52,17 @@ runLoop (loop.ts)
 ```
 
 The bin layer is thin: it parses flags, resolves three directories and the provider selection, and calls `runLoop` with a stage chain plus an `inputs` string. `runLoop` owns the iteration, signal handling, wake-lock, retries, and the sentinel gate without provider-specific branches. `renderTemplate` is a pure-ish synchronous string transform that may shell out to the **host** to expand tags. `runStage` is the only thing that talks to Docker; an agent adapter supplies the command, selected-provider credentials, environment, and JSONL decoder. `streamDocker` renders normalized assistant/tool/diagnostic events and returns the decoder's completion as the stage value.
+
+The opt-in `ralph-chief` profile is a separate state machine and does not replace the legacy AFK chain:
+
+```
+TASK.md → CHIEF planning → WORKER → MACHINE_CHECK → CHIEF_REVIEW
+                                      ↑                 │
+                                      └ RETURN / PATCH ─┘
+                         PASS / HUMAN_REQUIRED / MAX_ITERATIONS / TOKEN_BUDGET_EXCEEDED
+```
+
+`chief-loop.ts` reuses `runStage` and the existing provider adapters, while `machine-gate.ts` executes configured shell commands without a model. `git-guard.ts` protects the task, acceptance, `CHIEF.md`, and `DECISIONS.md` inputs. Chief output is strict JSON with `PASS`, `PATCH`, `RETURN`, or `HUMAN_REQUIRED`; a Chief code change always forces a new gate and review. Run artifacts are stored below `.ralph/chief-runs/<run-id>/`. With `chief_mode: external`, no Chief model is called: the run writes `CHIEF_HANDOFF.md`, enters `WAITING_FOR_CHIEF`, and resumes only from a validated `CHIEF_VERDICT.json`.
 
 `ensureImage` runs exactly once, before the iteration loop, so a missing/floating image is resolved a single time per run.
 
@@ -100,7 +111,10 @@ On a hit the loop prints the `Ralph ended · no-more-tasks · …` summary line 
 | [`loop.ts`](../packages/core/src/loop.ts)                   | `runLoop` — iteration driver: wake-lock, signal handlers, `ensureImage` once, per-stage render→runStage with retries, sentinel gate, notify on terminal events.                                                                |
 | [`render.ts`](../packages/core/src/render.ts)               | `renderTemplate` — expand the five tag forms; `resolveShell` picks the host shell for shell/spill tags.                                                                                                                        |
 | [`runner.ts`](../packages/core/src/runner.ts)               | Docker plumbing: `ensureImage` (sync + async overloads), `runStage`, `streamDocker`, socket detection/mount, provider volume mounts (`resolveAgentVolumeArgs`), image-ref helpers, `stageLogPath`, TTY-gated color exports.    |
-| [`stages.ts`](../packages/core/src/stages.ts)               | `STAGES` registry: `implementer` (afk.md), `ghafkImplementer` (ghafk.md), `reviewer` (review.md), all `bypassPermissions`; `Stage` type.                                                                                       |
+| [`stages.ts`](../packages/core/src/stages.ts)               | `STAGES` registry: legacy implementer/reviewer stages plus the provider-neutral `chief` stage; `Stage` supports per-stage agent/model/reasoning settings.                                                                      |
+| [`chief-loop.ts`](../packages/core/src/chief-loop.ts)       | Opt-in Chief/Worker state machine, persistence, status cards, token/iteration bounds, and PATCH re-gating.                                                                                                                     |
+| [`machine-gate.ts`](../packages/core/src/machine-gate.ts)   | Sequential, non-AI required/UAT shell gates with exit code, output, duration, timeout, and short-circuit results.                                                                                                              |
+| [`git-guard.ts`](../packages/core/src/git-guard.ts)         | Hash-backed working-tree snapshots and protected/forbidden path checks for Worker, Chief, and gate mutations.                                                                                                                  |
 | [`agents/types.ts`](../packages/core/src/agents/types.ts)   | Provider-neutral adapter, command context, mount, decoder, and normalized render-event contracts, including `skillsMount`, `skillsMounted`, and `volumeMounts`.                                                                |
 | [`agents/claude.ts`](../packages/core/src/agents/claude.ts) | Claude command/model resolution, the per-stage `claude update` wrapper + `ralph-claude-home` volume (`RALPH_CLAUDE_UPDATE`), selected credential mounts, `skillsMount` + the `--add-dir` skills root, and stream-json decoder. |
 | [`agents/codex.ts`](../packages/core/src/agents/codex.ts)   | Codex command/model/config resolution, `CODEX_HOME`, selected credential mount, `skillsMount` (`~/.agents/skills`), and JSONL terminal contract.                                                                               |
@@ -118,6 +132,12 @@ On a hit the loop prints the `Ralph ended · no-more-tasks · …` summary line 
 ```ts
 export { runAfk } from "./main.js";
 export { runGhAfk } from "./gh-main.js";
+export { runChief } from "./chief-main.js";
+export { runChiefLoop } from "./chief-loop.js";
+export { parseChiefDecision } from "./chief.js";
+export { loadChiefConfig } from "./chief-config.js";
+export { runMachineGate } from "./machine-gate.js";
+export { GitGuard } from "./git-guard.js";
 export type {
   AgentName,
   AgentSelection,
@@ -344,7 +364,7 @@ environment that launches Ralph. For `ralph-ghafk` under WSL, export
 `GH_CONFIG_DIR="$HOME/.config/gh"` so the provider-independent GitHub config is
 the one mounted read-only.
 
-### Docker socket mount (default ON)
+### Docker socket mount (default OFF)
 
 `resolveDockerSocketMount()` bind-mounts the host Docker socket into the sandbox so **Testcontainers** (and any Docker API client) inside the container can spawn **sibling** containers on the host daemon.
 
@@ -361,7 +381,7 @@ the one mounted read-only.
 
 On Windows only the explicit overrides are considered, then it returns `/var/run/docker.sock` (Docker Desktop translates it via the WSL2 backend). **Group fixup:** on Linux it `statSync`es the socket and passes `--group-add <gid>` matching the host docker group; on Docker Desktop (macOS/Windows) the socket surfaces as `root:root 0660`, so it passes `--group-add 0` (file-access group only — the agent process still runs as UID 1000).
 
-**Opt-out:** `RALPH_DOCKER_SOCK=0`. **Security note:** mounting `docker.sock` grants the selected agent, which runs without interactive approval, root-equivalent access to the host Docker daemon. Disabling the mount removes host-Docker control, but persistent host-write exposure still includes the workspace and selected provider's read-write credential store; `~/.config/gh` remains read-only.
+**Default:** the socket is not mounted. **Opt-in:** `RALPH_DOCKER_SOCK=1`. **Security note:** mounting `docker.sock` grants the selected agent, which runs without interactive approval, root-equivalent access to the host Docker daemon. Disabling the mount removes host-Docker control, but persistent host-write exposure still includes the workspace and selected provider's read-write credential store; `~/.config/gh` remains read-only.
 
 ### Image resolution — `ensureImage`
 
@@ -493,7 +513,7 @@ Release/publishing (release-please → tag-driven npm + image workflows) is the 
 | `RALPH_IMAGE_TAG`            | —                                                             | Legacy alias for `RALPH_IMAGE`.                                                                                                                                                                                                                                                  |
 | `RALPH_MODEL`                | Claude `claude-opus-5[1m]`; isolated Codex `gpt-5.6-sol`/high | Model override for the selected provider. Claude falls back to the model pinned in host `~/.claude/settings.json`, then Ralph's default; under `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` the container CLI resolves instead. Explicit invalid models fail without fallback. |
 | `RALPH_RESULT_GRACE_MS`      | `30000`                                                       | Post-completion kill timer; `0` disables. Invalid/negative → default.                                                                                                                                                                                                            |
-| `RALPH_DOCKER_SOCK`          | on                                                            | `0` disables the host `docker.sock` bind-mount.                                                                                                                                                                                                                                  |
+| `RALPH_DOCKER_SOCK`          | off                                                           | `1` opts in to the host `docker.sock` bind-mount.                                                                                                                                                                                                                                |
 | `RALPH_DOCKER_SOCK_PATH`     | auto-detect                                                   | Explicit host socket path.                                                                                                                                                                                                                                                       |
 | `RALPH_ISOLATE_NODE_MODULES` | on except Linux                                               | `0` shares the bind-mounted host `node_modules/`; `1` isolates on Linux too.                                                                                                                                                                                                     |
 | `RALPH_CLAUDE_UPDATE`        | on                                                            | `0` skips the per-stage `claude update` and the `ralph-claude-home` volume mount together, so Claude stages run the image's baked CLI. Ignored for Codex.                                                                                                                        |

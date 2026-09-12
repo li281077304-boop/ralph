@@ -1,0 +1,28 @@
+# Copy to the target repository as ACCEPTANCE.yaml and edit the commands.
+chief_mode: codex # codex = autonomous local Chief; external = wait for ChatGPT verdict
+max_iterations: 6
+max_total_tokens: 300000
+timeout_seconds: 1800
+
+commands:
+  - pnpm -r typecheck
+  - pnpm -r test
+uat_commands:
+  - pnpm test
+
+forbidden_paths:
+  - real_data/
+  - "*.xlsx"
+  - "*.xls"
+required_clean_patterns:
+  - __pycache__/
+max_diff_bytes: 1000000
+max_changed_paths: 1000
+
+chief:
+  agent: codex
+  model: gpt-5.6-sol
+  reasoning_effort: high
+worker:
+  agent: codex
+  model: gpt-5.6-terra

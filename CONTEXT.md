@@ -14,19 +14,20 @@ packages/core/          @daonhan/ralph-core  — TS library, compiled to dist/ (
   src/agents/           provider adapters: claude.ts, codex.ts, index.ts (registry), types.ts
   src/__tests__/        vitest suite
   templates/            prompt templates (afk/ghafk/review.md, prompt/ghprompt.md playbooks) + skills/ralph-tdd/ + Dockerfile
-apps/cli/               @daonhan/ralph — hand-written JS bins ralph-afk / ralph-ghafk, no build
+apps/cli/               @daonhan/ralph — hand-written JS bins ralph-afk / ralph-ghafk / ralph-chief, no build
 scripts/                repo-level node --test checks + smoke scripts (image, render, spill)
 images/pg17/            sandbox variant with PostgreSQL 17 + PostGIS (local build only)
 docs/                   ARCHITECTURE.md (runtime reference), prd/ + plans/ per feature, superpowers/ design docs
 .github/workflows/      release-please (npm + image) and image publish
 ```
 
-Two entry points, same loop, different first stage:
+The two legacy entry points share one AFK loop; `ralph-chief` is a separate opt-in state machine:
 
-| Bin           | Chain                            | Input                    |
-| ------------- | -------------------------------- | ------------------------ |
-| `ralph-afk`   | `implementer` → `reviewer`       | plan/PRD string argument |
-| `ralph-ghafk` | `ghafk-implementer` → `reviewer` | none (reads `gh` issues) |
+| Bin           | Chain                                                 | Input                            |
+| ------------- | ----------------------------------------------------- | -------------------------------- |
+| `ralph-afk`   | `implementer` → `reviewer`                            | plan/PRD string argument         |
+| `ralph-ghafk` | `ghafk-implementer` → `reviewer`                      | none (reads `gh` issues)         |
+| `ralph-chief` | Chief planning → Worker → Machine Gate → Chief review | `TASK.md` plus acceptance config |
 
 ## Read path (in this order)
 
@@ -45,10 +46,15 @@ Deeper: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the end-to-end data flo
 - **First stage gates, always.** Only index 0 of a chain is sentinel-checked. The reviewer never stops the loop.
 - **The loop is provider-neutral.** Provider differences live entirely in `agents/`. Never branch `loop.ts` or `render.ts` on agent name.
 - **Every stage bypasses approvals.** Claude runs with `bypassPermissions`; Codex with `--dangerously-bypass-approvals-and-sandbox`. This is required for AFK and is why the sandbox exists. Read [SECURITY.md](SECURITY.md) before changing mounts or permissions.
-- **Docker socket is mounted by default.** Gives the sandbox host-Docker access (for Testcontainers). Opt out with `RALPH_DOCKER_SOCK=0`.
+- **Docker socket is disabled by default.** Opt in with `RALPH_DOCKER_SOCK=1` only for trusted projects that need Testcontainers; mounting gives the sandbox host-Docker access.
 - **Templates are trusted code.** Shell tag bodies run on the host with no sanitization; `{{ INPUTS }}` is the only user-controlled substitution and is expanded last, after all shell tags.
 - **ESM with `.js` import suffixes** in TS sources. `apps/cli` stays plain JS.
 - **History is harness-owned.** `loop.ts` writes `<workspace>/.ralph/history/`; agents and templates never touch it.
+- **Chief runs are opt-in and separate.** `chief-loop.ts` writes evidence under
+  `<workspace>/.ralph/chief-runs/<run-id>/`; it never commits or pushes. Chief `PATCH` always
+  returns through a fresh Machine Gate and Chief review. `chief_mode: external` replaces local
+  Chief calls with `WAITING_FOR_CHIEF`, `CHIEF_HANDOFF.md`, and a validated `CHIEF_VERDICT.json`
+  consumed by `ralph-chief resume`.
 - **`CLAUDE.md` and `AGENTS.md` are twins.** Change both.
 
 ## Key knobs
@@ -59,7 +65,7 @@ Deeper: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the end-to-end data flo
 | `RALPH_MODEL`                           | Model override for the selected provider                 |
 | `RALPH_WORKSPACE`                       | Target repo (default cwd)                                |
 | `RALPH_IMAGE` / `RALPH_DOCKER_CONTEXT`  | Sandbox image ref / build-fallback context               |
-| `RALPH_DOCKER_SOCK=0`                   | Disable host Docker socket mount                         |
+| `RALPH_DOCKER_SOCK=1`                   | Opt in to host Docker socket mount (off by default)      |
 | `RALPH_ISOLATE_NODE_MODULES`            | Container-local sandbox `node_modules` (on except Linux) |
 | `RALPH_CLAUDE_UPDATE=0`                 | Skip the per-stage `claude update` + its cache volume    |
 | `RALPH_RESULT_GRACE_MS`                 | Kill timer after the agent reports completion            |

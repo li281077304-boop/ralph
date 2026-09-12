@@ -10,6 +10,7 @@ import {
   parseGraceMs,
   resolveAgentRuntimeArgs,
   resolveAgentVolumeArgs,
+  resolveDockerSocketMount,
   resolveModelArgs,
   resolveSkillsMountArgs,
 } from "../runner.js";
@@ -50,6 +51,30 @@ describe("parseGraceMs", () => {
   it("honors a custom default", () => {
     expect(parseGraceMs(undefined, 1000)).toBe(1000);
     expect(parseGraceMs("abc", 1000)).toBe(1000);
+  });
+});
+
+describe("resolveDockerSocketMount", () => {
+  it("keeps docker.sock disabled unless explicitly enabled", () => {
+    const previous = process.env.RALPH_DOCKER_SOCK;
+    delete process.env.RALPH_DOCKER_SOCK;
+    try {
+      expect(resolveDockerSocketMount()).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.RALPH_DOCKER_SOCK;
+      else process.env.RALPH_DOCKER_SOCK = previous;
+    }
+  });
+
+  it("honors the explicit opt-out even when enabled elsewhere", () => {
+    const previous = process.env.RALPH_DOCKER_SOCK;
+    process.env.RALPH_DOCKER_SOCK = "0";
+    try {
+      expect(resolveDockerSocketMount()).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.RALPH_DOCKER_SOCK;
+      else process.env.RALPH_DOCKER_SOCK = previous;
+    }
   });
 });
 

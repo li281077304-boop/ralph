@@ -170,9 +170,9 @@ Environment variables:
   RALPH_DOCKER_CONTEXT  docker build fallback context (default: bundled @daonhan/ralph-core dir)
   RALPH_IMAGE           image ref (default: docker.io/daonhan/ralph-sandbox:latest)
   RALPH_IMAGE_TAG       legacy alias for RALPH_IMAGE
-  RALPH_DOCKER_SOCK     "0" disables host docker.sock bind-mount (default: on if a
-                        socket is detected). Mounting lets Testcontainers inside the
-                        sandbox spawn sibling containers on the host daemon. Grants
+  RALPH_DOCKER_SOCK     "1" explicitly enables host docker.sock bind-mount (default:
+                        off). Mounting lets Testcontainers inside the sandbox spawn
+                        sibling containers on the host daemon, granting
                         root-equivalent host access.
   RALPH_AGENT           fallback agent selection when --agent is absent
   RALPH_MODEL           model override for the selected agent. Claude resolves
@@ -277,7 +277,7 @@ export function printConfig(
   const core = readCoreVersion();
   const cli = cliVersion ?? "?";
 
-  const sockOptOut = process.env.RALPH_DOCKER_SOCK === "0";
+  const sockOptIn = process.env.RALPH_DOCKER_SOCK === "1";
   const detectedSock = detectDockerSocketPath();
   const sockSource = process.env.RALPH_DOCKER_SOCK_PATH
     ? "RALPH_DOCKER_SOCK_PATH"
@@ -291,8 +291,8 @@ export function printConfig(
       : null;
 
   let sockStatus: string;
-  if (sockOptOut) {
-    sockStatus = "disabled (RALPH_DOCKER_SOCK=0)";
+  if (!sockOptIn) {
+    sockStatus = "disabled by default (set RALPH_DOCKER_SOCK=1 to enable)";
   } else if (!detectedSock) {
     sockStatus = "no socket found";
   } else {
