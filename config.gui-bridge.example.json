@@ -1,0 +1,5 @@
+{
+  "cdpUrl": "http://127.0.0.1:9222",
+  "conversationUrl": "https://chatgpt.com/c/REPLACE_WITH_FIXED_CONVERSATION_ID",
+  "timeoutMs": 120000
+}
