@@ -1,5 +1,7 @@
 export type ChiefVerdict = "PASS" | "PATCH" | "RETURN" | "HUMAN_REQUIRED";
 
+import type { MachineGateResult } from "./machine-gate.js";
+
 export type ChiefDecision = {
   verdict: ChiefVerdict;
   summary: string;
@@ -18,6 +20,10 @@ export type ExternalChiefVerdict = {
   human_question: string;
   human_options: string[];
   next_step: string;
+  run_id: string;
+  iteration: number;
+  handoff_hash: string;
+  previousGate?: MachineGateResult;
 };
 
 /**
@@ -122,6 +128,10 @@ export function parseExternalChiefVerdict(
     "human_question",
     "human_options",
     "next_step",
+    "run_id",
+    "iteration",
+    "handoff_hash",
+    "previousGate",
   ]);
   if (Object.keys(record).some((key) => !expectedKeys.has(key)))
     return undefined;
@@ -137,6 +147,11 @@ export function parseExternalChiefVerdict(
     typeof record.worker_task !== "string" ||
     typeof record.human_question !== "string" ||
     typeof record.next_step !== "string" ||
+    typeof record.run_id !== "string" ||
+    !Number.isInteger(record.iteration) ||
+    (record.iteration as number) < 1 ||
+    typeof record.handoff_hash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.handoff_hash) ||
     !Array.isArray(record.human_options) ||
     !record.human_options.every((item) => typeof item === "string")
   )
@@ -148,7 +163,15 @@ export function parseExternalChiefVerdict(
     human_question: record.human_question,
     human_options: record.human_options,
     next_step: record.next_step,
+    run_id: record.run_id,
+    iteration: record.iteration as number,
+    handoff_hash: record.handoff_hash,
+    previousGate: parseExternalGate(record.previousGate),
   } satisfies ExternalChiefVerdict;
+  if (record.previousGate !== undefined && !verdict.previousGate)
+    return undefined;
+  if (verdict.verdict === "PASS" && !verdict.previousGate?.passed)
+    return undefined;
   if (
     (verdict.verdict === "RETURN" || verdict.verdict === "PATCH") &&
     verdict.worker_task.trim() === ""
@@ -160,6 +183,33 @@ export function parseExternalChiefVerdict(
   )
     return undefined;
   return verdict;
+}
+
+function parseExternalGate(value: unknown): MachineGateResult | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.passed !== "boolean" || !Array.isArray(record.commands))
+    return undefined;
+  if (
+    !record.commands.every(
+      (command) =>
+        !!command &&
+        typeof command === "object" &&
+        !Array.isArray(command) &&
+        typeof (command as Record<string, unknown>).command === "string" &&
+        ((command as Record<string, unknown>).kind === "required" ||
+          (command as Record<string, unknown>).kind === "uat") &&
+        (typeof (command as Record<string, unknown>).exitCode === "number" ||
+          (command as Record<string, unknown>).exitCode === null) &&
+        typeof (command as Record<string, unknown>).stdout === "string" &&
+        typeof (command as Record<string, unknown>).stderr === "string" &&
+        typeof (command as Record<string, unknown>).durationMs === "number" &&
+        typeof (command as Record<string, unknown>).timedOut === "boolean"
+    )
+  )
+    return undefined;
+  return value as MachineGateResult;
 }
 
 export const parseExternalVerdict = parseExternalChiefVerdict;

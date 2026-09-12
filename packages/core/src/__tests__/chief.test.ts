@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -57,6 +58,9 @@ describe("Chief review contract", () => {
           human_question: "",
           human_options: [],
           next_step: "resume",
+          run_id: "run-1",
+          iteration: 1,
+          handoff_hash: "a".repeat(64),
         })
       )?.verdict
     ).toBe("RETURN");
@@ -70,6 +74,9 @@ describe("Chief review contract", () => {
           human_question: "",
           human_options: [],
           next_step: "done",
+          run_id: "run-1",
+          iteration: 1,
+          handoff_hash: "a".repeat(64),
           extra: "do not accept",
         })
       )
@@ -117,6 +124,43 @@ describe("Chief machine gate and Git Guard", () => {
     await writeFile(join(workspace, ".ralph", "state.json"), "ignored");
     const guard = new GitGuard(workspace, { forbiddenPaths: ["*"] });
     expect(guard.snapshot().files.size).toBe(0);
+  });
+
+  it("does not snapshot ignored directories in a Git worktree", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ralph-chief-ignore-"));
+    execFileSync("git", ["init", "-q"], { cwd: workspace });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: workspace,
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: workspace });
+    await writeFile(join(workspace, ".gitignore"), "ignored/\n");
+    await writeFile(join(workspace, "tracked.txt"), "tracked\n");
+    await mkdir(join(workspace, "ignored"), { recursive: true });
+    await writeFile(join(workspace, "ignored", "huge.bin"), "ignored\n");
+    execFileSync("git", ["add", "."], { cwd: workspace });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd: workspace });
+    const snapshot = new GitGuard(workspace).snapshot();
+    expect(snapshot.files.has("ignored/huge.bin")).toBe(false);
+    expect(snapshot.trackedFiles.has("tracked.txt")).toBe(true);
+  });
+
+  it("fails when a machine gate modifies tracked source", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ralph-chief-gate-source-"));
+    execFileSync("git", ["init", "-q"], { cwd: workspace });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: workspace,
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: workspace });
+    await writeFile(join(workspace, "source.txt"), "before\n");
+    execFileSync("git", ["add", "."], { cwd: workspace });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd: workspace });
+    const result = await runMachineGate(workspace, {
+      commands: [
+        "node -e \"require('fs').writeFileSync('source.txt','after\\n')\"",
+      ],
+    });
+    expect(result.passed).toBe(false);
+    expect(result.trackedChanges).toContain("source.txt");
   });
 
   it("enforces configured diff-growth limits", async () => {

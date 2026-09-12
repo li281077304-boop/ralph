@@ -120,9 +120,12 @@ ralph-chief resume <run-id> --repo /path/to/repo
 ```
 
 The external verdict must be strict JSON with `PASS`, `PATCH`, `RETURN`, or
-`HUMAN_REQUIRED`. `PATCH` and `RETURN` must include a `worker_task`; external Chief code
-changes are never faked locally. An invalid or missing verdict stops explicitly and never
-falls back to Codex Chief.
+`HUMAN_REQUIRED`, plus the exact `run_id`, `iteration`, and `handoff_hash` shown by the
+handoff. A `PASS` must also include an authoritative `previousGate` whose `passed` value is
+`true`. `PATCH` and `RETURN` must include a `worker_task`; external Chief code changes are
+never faked locally. Verdict files are consumed after a successful resume, and any workspace
+change invalidates the handoff. An invalid, stale, reused, or missing verdict stops explicitly
+and never falls back to Codex Chief.
 
 ### Upstream basics
 

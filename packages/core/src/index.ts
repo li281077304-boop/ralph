@@ -30,8 +30,10 @@ export {
 } from "./machine-gate.js";
 export {
   GitGuard,
+  workspaceFingerprint,
   type AcceptanceControls,
   type RepoSnapshot,
+  type WorkspaceFingerprint,
   type GuardViolation,
 } from "./git-guard.js";
 export type {

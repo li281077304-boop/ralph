@@ -18,7 +18,15 @@ export type RepoSnapshot = {
   status: string;
   diffStat: string;
   diff: string;
+  trackedFiles: Map<string, string>;
+  untrackedFiles: Map<string, string>;
   files: Map<string, string>;
+};
+
+export type WorkspaceFingerprint = {
+  head: string;
+  trackedDiffHash: string;
+  untrackedFiles: Record<string, string>;
 };
 
 export type GuardViolation = {
@@ -38,6 +46,7 @@ export class GitGuard {
   }
 
   snapshot(): RepoSnapshot {
+    const files = snapshotFiles(this.workspaceDir);
     return {
       branch:
         git(this.workspaceDir, ["symbolic-ref", "--short", "-q", "HEAD"]) ||
@@ -46,7 +55,9 @@ export class GitGuard {
       status: git(this.workspaceDir, ["status", "--porcelain=v1"]),
       diffStat: git(this.workspaceDir, ["diff", "--stat", "HEAD"]),
       diff: git(this.workspaceDir, ["diff", "--binary", "HEAD"]),
-      files: snapshotFiles(this.workspaceDir),
+      trackedFiles: files.trackedFiles,
+      untrackedFiles: files.untrackedFiles,
+      files: new Map([...files.trackedFiles, ...files.untrackedFiles]),
     };
   }
 
@@ -57,6 +68,18 @@ export class GitGuard {
     ]);
     return [...paths]
       .filter((path) => before.files.get(path) !== after.files.get(path))
+      .sort();
+  }
+
+  trackedChangedPaths(before: RepoSnapshot, after = this.snapshot()): string[] {
+    const paths = new Set<string>([
+      ...before.trackedFiles.keys(),
+      ...after.trackedFiles.keys(),
+    ]);
+    return [...paths]
+      .filter(
+        (path) => before.trackedFiles.get(path) !== after.trackedFiles.get(path)
+      )
       .sort();
   }
 
@@ -114,8 +137,28 @@ function git(cwd: string, args: string[]): string {
   }
 }
 
-function snapshotFiles(root: string): Map<string, string> {
-  const files = new Map<string, string>();
+function snapshotFiles(root: string): {
+  trackedFiles: Map<string, string>;
+  untrackedFiles: Map<string, string>;
+} {
+  const trackedFiles = new Map<string, string>();
+  const untrackedFiles = new Map<string, string>();
+  const trackedPaths = gitPaths(root, ["ls-files", "-z"]);
+  const untrackedPaths = gitPaths(root, [
+    "ls-files",
+    "--others",
+    "--exclude-standard",
+    "-z",
+  ]);
+  if (isGitWorktree(root)) {
+    addListedFiles(root, trackedPaths, trackedFiles);
+    addListedFiles(root, untrackedPaths, untrackedFiles);
+    return { trackedFiles, untrackedFiles };
+  }
+
+  // GitGuard is also useful in small non-Git fixtures. Keep a deliberately
+  // narrow fallback there; real repositories always use Git's ignore-aware
+  // file lists above.
   const visit = (dir: string): void => {
     let entries;
     try {
@@ -133,12 +176,53 @@ function snapshotFiles(root: string): Map<string, string> {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) visit(path);
       else if (entry.isFile() || entry.isSymbolicLink()) {
-        files.set(relative(root, path).replaceAll("\\", "/"), hash(path));
+        untrackedFiles.set(
+          relative(root, path).replaceAll("\\", "/"),
+          hash(path)
+        );
       }
     }
   };
   visit(root);
-  return files;
+  return { trackedFiles, untrackedFiles };
+}
+
+function addListedFiles(
+  root: string,
+  paths: string[],
+  target: Map<string, string>
+): void {
+  for (const path of paths) {
+    const normalized = path.replaceAll("\\", "/");
+    target.set(normalized, hash(join(root, normalized)));
+  }
+}
+
+function gitPaths(cwd: string, args: string[]): string[] {
+  try {
+    const output = execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output.split("\0").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function isGitWorktree(cwd: string): boolean {
+  try {
+    return (
+      execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "true"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function hash(path: string): string {
@@ -147,6 +231,23 @@ function hash(path: string): string {
   } catch {
     return "<unreadable>";
   }
+}
+
+export function workspaceFingerprint(
+  snapshot: RepoSnapshot,
+  excludedUntrackedPaths = ["CHIEF_VERDICT.json", "CHIEF_VERDICT.json.consumed"]
+): WorkspaceFingerprint {
+  const untrackedFiles: Record<string, string> = {};
+  for (const [path, value] of [...snapshot.untrackedFiles].sort((a, b) =>
+    a[0].localeCompare(b[0])
+  )) {
+    if (!excludedUntrackedPaths.includes(path)) untrackedFiles[path] = value;
+  }
+  return {
+    head: snapshot.head,
+    trackedDiffHash: createHash("sha256").update(snapshot.diff).digest("hex"),
+    untrackedFiles,
+  };
 }
 
 function normalizePattern(pattern: string): string {

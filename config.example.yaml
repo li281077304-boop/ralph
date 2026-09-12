@@ -16,6 +16,8 @@ forbidden_paths:
   - "*.xls"
 required_clean_patterns:
   - __pycache__/
+# Optional tracked artifacts a gate is explicitly allowed to generate.
+gate_allowed_paths: []
 max_diff_bytes: 1000000
 max_changed_paths: 1000
 

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+import { GitGuard } from "./git-guard.js";
+
 export type GateCommandResult = {
   command: string;
   kind: "required" | "uat";
@@ -13,6 +15,8 @@ export type GateCommandResult = {
 export type MachineGateResult = {
   passed: boolean;
   commands: GateCommandResult[];
+  /** Tracked product files changed by the gate process itself. */
+  trackedChanges?: string[];
 };
 
 export type MachineGateOptions = {
@@ -20,6 +24,8 @@ export type MachineGateOptions = {
   uatCommands?: string[];
   /** Maximum duration for each command. */
   timeoutMs?: number;
+  /** Explicitly permitted tracked artifacts produced by a gate. */
+  allowedGeneratedPaths?: string[];
 };
 
 /** Execute trusted, user-configured shell gates without invoking a model. */
@@ -29,19 +35,49 @@ export async function runMachineGate(
 ): Promise<MachineGateResult> {
   const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
   const results: GateCommandResult[] = [];
+  const guard = new GitGuard(workspaceDir);
+  const before = guard.snapshot();
+  let commandFailure = false;
   for (const command of options.commands ?? []) {
     const result = await runOne(command, "required", workspaceDir, timeoutMs);
     results.push(result);
-    if (result.exitCode !== 0 || result.timedOut)
-      return { passed: false, commands: results };
+    if (result.exitCode !== 0 || result.timedOut) {
+      commandFailure = true;
+      break;
+    }
   }
-  for (const command of options.uatCommands ?? []) {
-    const result = await runOne(command, "uat", workspaceDir, timeoutMs);
-    results.push(result);
-    if (result.exitCode !== 0 || result.timedOut)
-      return { passed: false, commands: results };
+  if (!commandFailure) {
+    for (const command of options.uatCommands ?? []) {
+      const result = await runOne(command, "uat", workspaceDir, timeoutMs);
+      results.push(result);
+      if (result.exitCode !== 0 || result.timedOut) {
+        commandFailure = true;
+        break;
+      }
+    }
   }
-  return { passed: true, commands: results };
+  const after = guard.snapshot();
+  const trackedChanges = guard.trackedChangedPaths(before, after);
+  const disallowedChanges = trackedChanges.filter(
+    (path) => !matchesAny(path, options.allowedGeneratedPaths ?? [])
+  );
+  return {
+    passed: !commandFailure && disallowedChanges.length === 0,
+    commands: results,
+    ...(trackedChanges.length ? { trackedChanges } : {}),
+  };
+}
+
+function matchesAny(path: string, patterns: string[]): boolean {
+  return patterns.some((raw) => {
+    const pattern = raw.replaceAll("\\", "/").replace(/^\.\//, "");
+    if (!pattern) return false;
+    const escaped = pattern
+      .split("*")
+      .map((part) => part.replace(/[|\\{}()[\]^$+?.]/g, "\\$&"))
+      .join(".*");
+    return new RegExp(`^(?:${escaped})(?:/|$)`).test(path);
+  });
 }
 
 function runOne(

@@ -20,6 +20,7 @@ export type ChiefConfig = {
   uat_commands: string[];
   forbidden_paths: string[];
   required_clean_patterns: string[];
+  gate_allowed_paths: string[];
   protected_paths: string[];
   max_diff_bytes?: number;
   max_changed_paths?: number;
@@ -38,6 +39,7 @@ const DEFAULT_CONFIG: ChiefConfig = {
   // changes this boundary.
   forbidden_paths: ["real_data/", "*.xlsx", "*.xls"],
   required_clean_patterns: [],
+  gate_allowed_paths: [],
   protected_paths: [
     "CHIEF.md",
     "DECISIONS.md",
@@ -201,6 +203,10 @@ export function loadChiefConfig(path?: string): ChiefConfig {
   config.required_clean_patterns = strings(
     parsed.required_clean_patterns,
     "required_clean_patterns"
+  );
+  config.gate_allowed_paths = strings(
+    parsed.gate_allowed_paths,
+    "gate_allowed_paths"
   );
   config.protected_paths = [
     ...new Set([

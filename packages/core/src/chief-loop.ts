@@ -6,6 +6,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, relative, resolve } from "node:path";
 
 import type { StageMeta } from "./agents/index.js";
@@ -26,6 +27,8 @@ import {
   GitGuard,
   type AcceptanceControls,
   type RepoSnapshot,
+  workspaceFingerprint,
+  type WorkspaceFingerprint,
 } from "./git-guard.js";
 import {
   runMachineGate,
@@ -66,6 +69,7 @@ export type ChiefLoopConfig = {
   uatCommands?: string[];
   forbiddenPaths?: string[];
   requiredCleanPatterns?: string[];
+  gateAllowedPaths?: string[];
   protectedPaths?: string[];
   maxDiffBytes?: number;
   maxChangedPaths?: number;
@@ -84,6 +88,12 @@ export type ChiefRunState = {
   reason?: string;
   startedAt: string;
   updatedAt: string;
+  handoff?: {
+    runId: string;
+    iteration: number;
+    handoffHash: string;
+    workspaceFingerprint: WorkspaceFingerprint;
+  };
 };
 
 export type ChiefAgentRunner = (
@@ -303,7 +313,49 @@ export async function runChiefLoop(
         "请提供合法的 CHIEF_VERDICT.json"
       );
     }
+    const currentWorkspace = guard.snapshot();
+    const handoffError = validateExternalHandoff(
+      state,
+      runDir,
+      external.verdict,
+      currentWorkspace
+    );
+    if (handoffError) {
+      return finish(
+        state,
+        runDir,
+        "FAILED",
+        handoffError,
+        card,
+        "请重新生成 handoff 并重新审计"
+      );
+    }
     const decision = external.verdict;
+    if (
+      decision.verdict === "PASS" &&
+      (!state.previousGate?.passed || !decision.previousGate?.passed)
+    ) {
+      return finish(
+        state,
+        runDir,
+        "FAILED",
+        "External Chief PASS 被拒绝：previousGate 不存在或未通过",
+        card,
+        "请根据最新 Machine Gate 结果重新提交 verdict"
+      );
+    }
+    const consumedError = consumeExternalVerdict(external.path);
+    if (consumedError) {
+      return finish(
+        state,
+        runDir,
+        "FAILED",
+        consumedError,
+        card,
+        "请重新生成并提交一次性的 CHIEF_VERDICT.json"
+      );
+    }
+    state.handoff = undefined;
     state.previousDecision = externalToChiefDecision(decision);
     if (decision.verdict === "PASS") {
       return finish(state, runDir, "PASS", decision.summary, card, "任务完成");
@@ -496,6 +548,7 @@ export async function runChiefLoop(
       commands: config.commands,
       uatCommands: config.uatCommands,
       timeoutMs: (config.timeoutSeconds ?? 1800) * 1000,
+      allowedGeneratedPaths: config.gateAllowedPaths,
     });
     appendGateHistory(
       history,
@@ -514,6 +567,26 @@ export async function runChiefLoop(
         "Machine Gate 创建了 Git commit；验收命令不得修改提交历史",
         card,
         "请检查 acceptance 命令"
+      );
+    }
+    const gateTrackedChanges = guard.trackedChangedPaths(beforeGate, afterGate);
+    const disallowedGateTrackedChanges = gateTrackedChanges.filter(
+      (path) => !matchesAnyPattern(path, config.gateAllowedPaths ?? [])
+    );
+    if (disallowedGateTrackedChanges.length) {
+      gate.passed = false;
+      gate.trackedChanges = disallowedGateTrackedChanges;
+      atomicWrite(
+        join(iterationDir, "machine_gate.json"),
+        `${JSON.stringify(gate, null, 2)}\n`
+      );
+      return finish(
+        state,
+        runDir,
+        "FAILED",
+        `Machine Gate 修改了 tracked 产品文件：${disallowedGateTrackedChanges.join(", ")}`,
+        card,
+        "请移除验收命令对产品代码的写入"
       );
     }
     state.previousGate = gate;
@@ -552,7 +625,7 @@ export async function runChiefLoop(
         ? "等待外部总工审计 Machine Gate 与 Git diff"
         : "Machine Gate 失败，等待外部总工判断下一步";
       persist();
-      writeExternalHandoff({
+      const handoff = writeExternalHandoff({
         runDir,
         workspaceDir: options.workspaceDir,
         state,
@@ -563,6 +636,13 @@ export async function runChiefLoop(
         changedPaths: guard.changedPaths(beforeWorker, afterGate),
         iterationDir,
       });
+      state.handoff = {
+        runId: state.runId,
+        iteration: state.iteration,
+        handoffHash: handoff.handoffHash,
+        workspaceFingerprint: handoff.workspaceFingerprint,
+      };
+      persist();
       card(
         gate.passed ? "PASS" : "FAIL",
         gate.passed
@@ -850,6 +930,7 @@ async function chiefReviewLoop(args: {
       commands: args.config.commands,
       uatCommands: args.config.uatCommands,
       timeoutMs: (args.config.timeoutSeconds ?? 1800) * 1000,
+      allowedGeneratedPaths: args.config.gateAllowedPaths,
     });
     appendGateHistory(
       args.history,
@@ -873,6 +954,34 @@ async function chiefReviewLoop(args: {
         "PATCH 后的 Machine Gate 创建了 Git commit；验收命令不得修改提交历史",
         args.card,
         "请检查 acceptance 命令"
+      );
+    }
+    const patchTrackedChanges = args.guard.trackedChangedPaths(
+      beforePatchGate,
+      afterPatchGate
+    );
+    const disallowedPatchTrackedChanges = patchTrackedChanges.filter(
+      (path) => !matchesAnyPattern(path, args.config.gateAllowedPaths ?? [])
+    );
+    if (disallowedPatchTrackedChanges.length) {
+      gate.passed = false;
+      gate.trackedChanges = disallowedPatchTrackedChanges;
+      atomicWrite(
+        join(args.iterationDir, `machine_gate-chief-patch-${reviewNo}.json`),
+        `${JSON.stringify(gate, null, 2)}\n`
+      );
+      return finish(
+        args.state,
+        join(
+          args.options.workspaceDir,
+          ".ralph",
+          "chief-runs",
+          args.state.runId
+        ),
+        "FAILED",
+        `PATCH 后的 Machine Gate 修改了 tracked 产品文件：${disallowedPatchTrackedChanges.join(", ")}`,
+        args.card,
+        "请移除验收命令对产品代码的写入"
       );
     }
     const patchGateViolations = args.guard.violations(beforePatchGate);
@@ -932,6 +1041,7 @@ function normalizeConfig(
     | "uatCommands"
     | "forbiddenPaths"
     | "requiredCleanPatterns"
+    | "gateAllowedPaths"
     | "protectedPaths"
   >
 > &
@@ -948,6 +1058,7 @@ function normalizeConfig(
     forbiddenPaths: input.forbiddenPaths ?? base.forbidden_paths,
     requiredCleanPatterns:
       input.requiredCleanPatterns ?? base.required_clean_patterns,
+    gateAllowedPaths: input.gateAllowedPaths ?? base.gate_allowed_paths,
     protectedPaths: input.protectedPaths ?? base.protected_paths,
     maxDiffBytes: input.maxDiffBytes ?? base.max_diff_bytes,
     maxChangedPaths: input.maxChangedPaths ?? base.max_changed_paths,
@@ -1187,7 +1298,7 @@ function loadExternalVerdict(
   workspaceDir: string,
   runDir: string,
   explicitPath?: string
-): { verdict?: ExternalChiefVerdict; error?: string } {
+): { verdict?: ExternalChiefVerdict; path?: string; error?: string } {
   const candidates = explicitPath
     ? [resolve(explicitPath)]
     : [
@@ -1211,8 +1322,23 @@ function loadExternalVerdict(
   }
   const verdict = parseExternalChiefVerdict(raw);
   return verdict
-    ? { verdict }
+    ? { verdict, path }
     : { error: `CHIEF_VERDICT.json is not valid external Chief JSON: ${path}` };
+}
+
+function consumeExternalVerdict(path: string | undefined): string | undefined {
+  if (!path) return "External Chief verdict path is missing";
+  const consumedPath = `${path}.consumed`;
+  if (existsSync(consumedPath))
+    return `External Chief verdict was already consumed: ${path}`;
+  try {
+    renameSync(path, consumedPath);
+    return undefined;
+  } catch (error) {
+    return `Cannot consume external Chief verdict ${path}: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
 }
 
 function externalToChiefDecision(verdict: ExternalChiefVerdict): ChiefDecision {
@@ -1228,6 +1354,49 @@ function externalToChiefDecision(verdict: ExternalChiefVerdict): ChiefDecision {
   };
 }
 
+function validateExternalHandoff(
+  state: ChiefRunState,
+  runDir: string,
+  verdict: ExternalChiefVerdict,
+  current: RepoSnapshot
+): string | undefined {
+  const handoff = state.handoff;
+  if (!handoff)
+    return "External Chief handoff metadata is missing; old or incomplete WAITING state cannot be resumed";
+  if (verdict.run_id !== state.runId || handoff.runId !== state.runId)
+    return "External Chief verdict run_id does not match the waiting run";
+  if (
+    verdict.iteration !== state.iteration ||
+    handoff.iteration !== state.iteration
+  )
+    return "External Chief verdict iteration does not match the waiting handoff";
+  if (verdict.handoff_hash !== handoff.handoffHash)
+    return "External Chief verdict handoff_hash does not match the waiting handoff";
+  const handoffPath = join(runDir, "CHIEF_HANDOFF.md");
+  if (!existsSync(handoffPath))
+    return `CHIEF_HANDOFF.md not found: ${handoffPath}`;
+  let handoffText: string;
+  try {
+    handoffText = readFileSync(handoffPath, "utf8");
+  } catch (error) {
+    return `Cannot read CHIEF_HANDOFF.md: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+  const canonical = handoffText.replace(
+    /\n\nhandoff_hash: [a-f0-9]{64}\n?$/,
+    "\n"
+  );
+  const actualHash = createHash("sha256").update(canonical).digest("hex");
+  if (actualHash !== handoff.handoffHash)
+    return "CHIEF_HANDOFF.md has changed since WAITING_FOR_CHIEF; regenerate handoff and re-audit";
+  const expectedFingerprint = handoff.workspaceFingerprint;
+  const actualFingerprint = workspaceFingerprint(current);
+  if (JSON.stringify(actualFingerprint) !== JSON.stringify(expectedFingerprint))
+    return "workspace changed since WAITING_FOR_CHIEF; regenerate handoff and re-audit before applying verdict";
+  return undefined;
+}
+
 function writeExternalHandoff(args: {
   runDir: string;
   workspaceDir: string;
@@ -1238,7 +1407,7 @@ function writeExternalHandoff(args: {
   current: RepoSnapshot;
   changedPaths: string[];
   iterationDir: string;
-}): void {
+}): { handoffHash: string; workspaceFingerprint: WorkspaceFingerprint } {
   const relativeEvidence = (path: string): string =>
     relative(args.workspaceDir, path).replaceAll("\\", "/");
   const workerOutputPath = join(args.iterationDir, "worker_output.json");
@@ -1281,7 +1450,7 @@ function writeExternalHandoff(args: {
     ? args.changedPaths.map((path) => `- ${path}`).join("\n")
     : "- (no changed files)";
   const evidenceDir = relativeEvidence(args.runDir);
-  const text = [
+  const canonicalText = [
     "# CHIEF_HANDOFF",
     "",
     "本文件是 external Chief 模式的精简交接，不包含完整代码或完整日志。",
@@ -1292,6 +1461,8 @@ function writeExternalHandoff(args: {
     "",
     "## 【当前状态】",
     `${args.state.status} · iteration ${args.state.iteration}/${args.config.maxIterations}`,
+    `run_id: ${args.state.runId}`,
+    `iteration: ${args.state.iteration}`,
     "",
     "## 【Worker 本轮做了什么】",
     truncate(workerSummary, 2_000),
@@ -1323,6 +1494,12 @@ function writeExternalHandoff(args: {
     "- RETURN（给出下一轮窄 Worker 任务）",
     "- HUMAN_REQUIRED",
     "",
+    "## 【CHIEF_VERDICT.json 必填绑定】",
+    `- run_id: ${args.state.runId}`,
+    `- iteration: ${args.state.iteration}`,
+    `- handoff_hash: 见本文件末尾`,
+    "- PASS 必须携带 previousGate，并且 previousGate.passed=true",
+    "",
     "## 【原始证据位置】",
     `- run directory: ${evidenceDir}`,
     `- state: ${relativeEvidence(join(args.runDir, "state.json"))}`,
@@ -1333,7 +1510,15 @@ function writeExternalHandoff(args: {
       args.state.iteration
     ).padStart(2, "0")}/`,
   ].join("\n");
-  atomicWrite(join(args.runDir, "CHIEF_HANDOFF.md"), `${text}\n`);
+  const handoffHash = createHash("sha256")
+    .update(`${canonicalText}\n`)
+    .digest("hex");
+  const text = `${canonicalText}\n\nhandoff_hash: ${handoffHash}\n`;
+  atomicWrite(join(args.runDir, "CHIEF_HANDOFF.md"), text);
+  return {
+    handoffHash,
+    workspaceFingerprint: workspaceFingerprint(args.current),
+  };
 }
 
 function gateFailureSummary(gate: MachineGateResult): string {
@@ -1478,6 +1663,21 @@ function hasDirtyPattern(paths: string[], patterns: string[]): boolean {
       );
     })
   );
+}
+
+function matchesAnyPattern(path: string, patterns: string[]): boolean {
+  return patterns.some((raw) => {
+    const pattern = raw.replaceAll("\\", "/").replace(/^\.\//, "");
+    if (!pattern) return false;
+    const escaped = pattern
+      .split("*")
+      .map((part) => part.replace(/[|\\{}()[\]^$+?.]/g, "\\$&"))
+      .join(".*");
+    return (
+      new RegExp(`^(?:${escaped})(?:/|$)`).test(path) ||
+      new RegExp(`(?:^|/)${escaped}$`).test(path)
+    );
+  });
 }
 function formatViolations(
   violations: { kind: string; path: string }[]
