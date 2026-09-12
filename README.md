@@ -127,6 +127,21 @@ never faked locally. Verdict files are consumed after a successful resume, and a
 change invalidates the handoff. An invalid, stale, reused, or missing verdict stops explicitly
 and never falls back to Codex Chief.
 
+### GUI Bridge first-time Chrome setup
+
+The one-shot GUI Bridge requires Chrome to expose a DevTools endpoint. Fully quit Chrome
+once, then start it with the same profile so the existing ChatGPT login is reused:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/Library/Application Support/Google/Chrome"
+```
+
+Keep that Chrome process running while `pnpm gui-bridge:test` runs. The bridge attaches via
+Playwright CDP; it does not start Chrome, use OCR, click absolute coordinates, or use the
+clipboard.
+
 ### Upstream basics
 
 This repository is based on the upstream Ralph loop. Keep upstream-compatible changes small and documented: preserve the first-stage gate invariant, the provider adapter boundary, the `.ralph/history/` ownership rule, and the existing CLI entry points. When syncing upstream, review the diff around `packages/core/src/loop.ts`, `runner.ts`, `agents/`, `stages.ts`, templates, and security documentation before resolving conflicts. Run `pnpm -r typecheck` and `pnpm -r test` after the sync; do not copy generated `dist/` output or local run artifacts into the branch.

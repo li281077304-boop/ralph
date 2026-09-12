@@ -32,6 +32,7 @@ ralph-ghafk 5                     # GitHub-issue loop
 ralph-chief --repo /path/to/repo --task /path/to/TASK.md --config /path/to/ACCEPTANCE.yaml
 ralph-chief run --chief-mode external --repo /path/to/repo --task /path/to/TASK.md --config /path/to/ACCEPTANCE.yaml
 ralph-chief resume <run-id> --repo /path/to/repo
+pnpm gui-bridge:test -- --config /path/to/gui-bridge.config.json
 ralph-afk --agent codex "<plan-and-prd>" 5
 ralph-ghafk --agent codex 5
 ralph-afk --help                  # flags, env vars
@@ -53,6 +54,24 @@ First-run setup, per-OS notes, and the full flag/env reference are in the
 **[QUICKSTART](https://github.com/daonhan/ralph/blob/main/QUICKSTART.md)**.
 Read the full [security threat model](https://github.com/daonhan/ralph/blob/main/SECURITY.md)
 before running either provider.
+
+### ChatGPT GUI Bridge (single test)
+
+`ralph-gui-bridge` is a deliberately small, opt-in DOM bridge. It attaches to an already
+logged-in Chrome DevTools endpoint, opens the configured conversation, sends one nonce test
+message, and validates the marked JSON reply. It does not use OCR, absolute mouse coordinates,
+or the clipboard, and it does not connect to Ralph resume or any Chief stage.
+
+Create a JSON config from `config.gui-bridge.example.json`, replacing the conversation URL,
+then run:
+
+```bash
+pnpm gui-bridge:test -- --config /path/to/gui-bridge.config.json
+```
+
+The first setup requires launching Chrome with remote debugging enabled (see the root README
+for the exact macOS command). The bridge never starts Chrome itself and fails closed on missing
+login, conversation, input, send, timeout, incomplete reply, marker, JSON, or nonce errors.
 
 ## License
 

@@ -28,7 +28,8 @@
   "bin": {
     "ralph-afk": "./bin/ralph-afk.js",
     "ralph-ghafk": "./bin/ralph-ghafk.js",
-    "ralph-chief": "./bin/ralph-chief.js"
+    "ralph-chief": "./bin/ralph-chief.js",
+    "ralph-gui-bridge": "./bin/ralph-gui-bridge.js"
   },
   "files": [
     "bin",
@@ -36,7 +37,8 @@
     "README.md"
   ],
   "dependencies": {
-    "@daonhan/ralph-core": "workspace:^"
+    "@daonhan/ralph-core": "workspace:^",
+    "playwright-core": "^1.63.0"
   },
   "engines": {
     "node": ">=20"
