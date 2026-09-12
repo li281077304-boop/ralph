@@ -75,8 +75,9 @@ class FakeLocator {
 }
 
 class FakePage {
-  constructor(url) {
+  constructor(url, responseMode = "complete") {
     this.currentUrl = url;
+    this.responseMode = responseMode;
     this.assistants = ["previous assistant message"];
   }
 
@@ -90,13 +91,20 @@ class FakePage {
 
   respond() {
     const nonce = this.sent.match(/nonce = ([^\n]+)/)?.[1];
-    this.assistants.push(
-      `<<<CHIEF_VERDICT_JSON>>>\n${JSON.stringify({
-        type: "GUI_BRIDGE_TEST",
-        nonce,
-        status: "OK",
-      })}\n<<<END_CHIEF_VERDICT_JSON>>>`
-    );
+    const opening = `<<<CHIEF_VERDICT_JSON>>>\n{"type":"GUI_BRIDGE_TEST","nonce":"`;
+    const closing = `","status":"OK"}\n<<<END_CHIEF_VERDICT_JSON>>>`;
+    if (this.responseMode === "incomplete") {
+      this.assistants.push(`${opening}${nonce}`);
+      return;
+    }
+    if (this.responseMode === "delayed-closing") {
+      this.assistants.push(`${opening}${nonce}`);
+      setTimeout(() => {
+        this.assistants[this.assistants.length - 1] += closing;
+      }, 700);
+      return;
+    }
+    this.assistants.push(`${opening}${nonce}${closing}`);
   }
 }
 
@@ -122,6 +130,43 @@ test("GUI Bridge performs one DOM roundtrip and validates the nonce", async () =
   assert.equal(result.verdict.type, "GUI_BRIDGE_TEST");
   assert.equal(result.verdict.status, "OK");
   assert.match(page.sent, /这是 GUI Bridge 通信测试/);
+});
+
+test("GUI Bridge waits through a stable partial reply for the closing marker", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delayed-closing";
+  const page = new FakePage(conversationUrl, "delayed-closing");
+  const browser = { contexts: () => [new FakeContext(page)] };
+  const result = await runGuiBridgeRoundtrip(
+    { cdpUrl: "http://127.0.0.1:9222", conversationUrl, timeoutMs: 2_000 },
+    { connectOverCDP: async () => browser, random: () => 0.5 }
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.verdict.status, "OK");
+});
+
+test("GUI Bridge rejects a new assistant reply without a closing marker", async () => {
+  const conversationUrl = "https://chatgpt.com/c/missing-closing";
+  const page = new FakePage(conversationUrl, "incomplete");
+  const browser = { contexts: () => [new FakeContext(page)] };
+  await assert.rejects(
+    runGuiBridgeRoundtrip(
+      { cdpUrl: "http://127.0.0.1:9222", conversationUrl, timeoutMs: 700 },
+      { connectOverCDP: async () => browser, random: () => 0.75 }
+    ),
+    (error) => error.code === "ASSISTANT_REPLY_INCOMPLETE"
+  );
+});
+
+test("GUI Bridge accepts a complete marker reply", async () => {
+  const conversationUrl = "https://chatgpt.com/c/complete-marker";
+  const page = new FakePage(conversationUrl, "complete");
+  const browser = { contexts: () => [new FakeContext(page)] };
+  const result = await runGuiBridgeRoundtrip(
+    { cdpUrl: "http://127.0.0.1:9222", conversationUrl, timeoutMs: 2_000 },
+    { connectOverCDP: async () => browser, random: () => 0.9 }
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.verdict.type, "GUI_BRIDGE_TEST");
 });
 
 test("GUI Bridge parser fails closed for marker, JSON, and nonce errors", () => {
