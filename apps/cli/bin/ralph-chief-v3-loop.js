@@ -41,6 +41,17 @@ function result(status, state, extra = {}) {
   return { status, runState: state, ...extra };
 }
 
+function phaseMessage(state) {
+  if (state.phase === "SELECT") return "总工正在选择任务";
+  if (isWaitingFor(state, "select")) return "正在恢复总工选择";
+  if (state.phase === "WORKER") return "Luna Goal 正在施工";
+  if (state.phase === "MACHINE_GATE") return "正在进行机器验收";
+  if (state.phase === "CHECKPOINT") return "正在创建并推送检查点";
+  if (state.phase === "CHIEF_REVIEW") return "外部总工正在独立审查 GitHub";
+  if (isWaitingFor(state, "review")) return "正在恢复外部总工审查";
+  return undefined;
+}
+
 /** Route durable V3 phases; each existing runner owns its own writer lock. */
 export async function runV3BigLoop(options) {
   const projectRoot = resolve(options.projectRoot);
@@ -115,6 +126,12 @@ export async function runV3BigLoop(options) {
 
     if (typeof handler !== "function")
       throw new Error(`V3 Big Loop has no handler for phase ${state.phase}`);
+    options.onProgress?.({
+      round: state.round,
+      phase: state.phase,
+      message: phaseMessage(state),
+      state,
+    });
     try {
       await handler(state, { projectRoot, runId, config });
       dispatches += 1;
@@ -157,9 +174,12 @@ export async function main(argv = process.argv.slice(2)) {
     projectRoot: args.repo,
     runId: args.run_id,
     config,
+    onProgress: ({ round, message }) => {
+      if (message) process.stdout.write(`[第 ${round} 轮] ${message}\n`);
+    },
   });
   process.stdout.write(
-    `V3_BIG_LOOP_${outcome.status} phase=${outcome.runState.phase} round=${outcome.runState.round} task=${outcome.runState.current_task_id ?? "none"}${outcome.reason ? ` reason=${outcome.reason}` : ""}\n`
+    `当前状态：${outcome.status}\n停止原因：${outcome.reason ?? outcome.runState.stop_reason ?? "无"}\n下一步：${outcome.nextPhase ? `进入${outcome.nextPhase}阶段` : outcome.status === "TASK_PASS" ? "任务已完成" : outcome.status === "WAITING_FOR_CHIEF" ? "恢复外部总工后重新运行同一命令" : "按当前状态继续或处理阻塞"}\n`
   );
   if (outcome.status === "FAILED" || outcome.status === "HUMAN_REQUIRED")
     process.exitCode = outcome.status === "FAILED" ? 1 : 2;

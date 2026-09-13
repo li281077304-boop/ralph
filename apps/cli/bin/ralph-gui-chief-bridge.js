@@ -162,7 +162,7 @@ export function chiefPrompt(context, handoff) {
   ].join("\n");
 }
 
-function loadExtensionEnv(envFile) {
+export function loadExtensionEnv(envFile) {
   const env = { ...process.env };
   const candidate = envFile
     ? expandHome(envFile)

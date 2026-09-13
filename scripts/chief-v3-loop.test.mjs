@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { runV3BigLoop } from "../apps/cli/bin/ralph-chief-v3-loop.js";
+import { loadExtensionEnv } from "../apps/cli/bin/ralph-gui-chief-bridge.js";
 
 function harness(initial, maxIterations = 8) {
   let state = structuredClone(initial);
@@ -156,4 +159,34 @@ test("the outer loop does not acquire a competing global writer lock", async () 
     "utf8"
   );
   assert.doesNotMatch(source, /acquireActiveWriterLock/);
+});
+
+test("progress messages are user-facing Chinese while protocol phases stay stable", async () => {
+  const h = harness(running("WORKER"));
+  const messages = [];
+  h.phaseHandlers.work = async () => {
+    h.order.push("work");
+    h.setState({ ...running("DONE", 1, null), status: "done" });
+  };
+  await h.run({ onProgress: ({ message }) => messages.push(message) });
+  assert.deepEqual(messages, ["Luna Goal 正在施工"]);
+});
+
+test("configured extension token env is forwarded through the existing bridge loader", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ralph-v3-loop-env-"));
+  const path = join(dir, "env");
+  const previous = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
+  delete process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
+  try {
+    await writeFile(path, "PLAYWRIGHT_MCP_EXTENSION_TOKEN=fixture-token\n", {
+      mode: 0o600,
+    });
+    const env = loadExtensionEnv(path);
+    assert.equal(env.PLAYWRIGHT_MCP_EXTENSION_TOKEN, "fixture-token");
+  } finally {
+    if (previous === undefined)
+      delete process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
+    else process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = previous;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
