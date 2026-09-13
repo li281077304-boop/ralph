@@ -12,6 +12,7 @@ import {
   dispatchPhase,
   getRoundArtifactPath,
   getRoundDir,
+  getChiefRunDir,
   hydrateRunState,
   inspectActiveWriterLock,
   isRunnablePhase,
@@ -116,6 +117,8 @@ describe("Chief V3 durable foundation", () => {
 
   it("uses deterministic round artifact paths", () => {
     const runDir = "/tmp/run";
+    expect(getChiefRunDir("/repo", "abc")).toBe("/repo/.ralph/chief-runs/abc");
+    expect(() => getChiefRunDir("/repo", "../escape")).toThrow();
     expect(roundName(1)).toBe("001");
     expect(getRoundDir(runDir, 2)).toBe("/tmp/run/rounds/002");
     expect(getRoundArtifactPath(runDir, 2, "review")).toBe(

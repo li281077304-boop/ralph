@@ -82,6 +82,7 @@ export {
 } from "./v3/phases.js";
 export {
   ROUND_ARTIFACTS,
+  getChiefRunDir,
   roundName,
   getRoundDir,
   getRoundArtifactPath,

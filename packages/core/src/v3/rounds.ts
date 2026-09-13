@@ -10,6 +10,22 @@ export const ROUND_ARTIFACTS = [
 ] as const;
 export type RoundArtifact = (typeof ROUND_ARTIFACTS)[number];
 
+function safeRunId(runId: string): string {
+  if (
+    !runId ||
+    runId === "." ||
+    runId === ".." ||
+    runId.includes("/") ||
+    runId.includes("\\")
+  )
+    throw new Error("run_id must be a safe path segment");
+  return runId;
+}
+
+export function getChiefRunDir(projectRoot: string, runId: string): string {
+  return join(projectRoot, ".ralph", "chief-runs", safeRunId(runId));
+}
+
 export function roundName(round: number): string {
   if (!Number.isInteger(round) || round < 1)
     throw new Error("round must be a positive integer");
