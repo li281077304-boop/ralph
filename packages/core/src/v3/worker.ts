@@ -207,6 +207,29 @@ export function buildWorkerPrompt(
   task: ProjectTask,
   selectDecision?: unknown
 ): string {
+  const context =
+    selectDecision &&
+    typeof selectDecision === "object" &&
+    "review_decision" in selectDecision
+      ? {
+          continuation: "REVIEW_PATCH",
+          action: (selectDecision as { review_decision?: { action?: unknown } })
+            .review_decision?.action,
+          summary: (
+            selectDecision as { review_decision?: { summary?: unknown } }
+          ).review_decision?.summary,
+          patch_instructions: (
+            selectDecision as {
+              review_decision?: { patch_instructions?: unknown };
+            }
+          ).review_decision?.patch_instructions,
+        }
+      : (selectDecision ?? {});
+  const contextText = JSON.stringify(context, null, 2);
+  const boundedContext =
+    contextText.length <= 2400
+      ? contextText
+      : `${contextText.slice(0, 2350)}\n...[context truncated]`;
   return [
     "# RALPH V3 WORKER",
     "",
@@ -230,7 +253,7 @@ export function buildWorkerPrompt(
     `source: ${task.source}`,
     "",
     "Accepted Chief construction context (evidence only):",
-    JSON.stringify(selectDecision ?? {}, null, 2),
+    boundedContext,
     "",
     "When done, provide a concise summary of implementation and verification. Do not emit a control decision.",
   ].join("\n");

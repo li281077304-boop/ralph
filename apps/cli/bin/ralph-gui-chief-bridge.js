@@ -25,6 +25,75 @@ const INPUT_SELECTORS = [
 const END_MARKER = "<<<END_CHIEF_VERDICT_JSON>>>";
 
 /**
+ * Pick the first genuinely writable composer candidate.  A page can contain
+ * hidden editors (for example a template textarea plus the visible ChatGPT
+ * contenteditable), so selector-level `last()` is not a safe choice.
+ */
+export async function findFirstEditableInput(page, selectors) {
+  const diagnostics = [];
+  for (const selector of selectors) {
+    const locator = page.locator(selector);
+    let count = 0;
+    try {
+      count = await locator.count();
+    } catch (error) {
+      diagnostics.push({ selector, count: 0, error: String(error) });
+      continue;
+    }
+    let visibleCount = 0;
+    let editableCandidate;
+    for (let index = 0; index < count; index += 1) {
+      const candidate = locator.nth(index);
+      let visible = false;
+      let enabled = false;
+      let editable = false;
+      try {
+        visible = await candidate.isVisible();
+        enabled = await candidate.isEnabled();
+        editable = await candidate.isEditable();
+      } catch (error) {
+        diagnostics.push({
+          selector,
+          index,
+          visible,
+          enabled,
+          editable,
+          error: String(error),
+        });
+        continue;
+      }
+      if (visible) visibleCount += 1;
+      const candidateDiagnostic = {
+        selector,
+        index,
+        visible,
+        enabled,
+        editable,
+      };
+      diagnostics.push(candidateDiagnostic);
+      if (!editableCandidate && visible && enabled && editable)
+        editableCandidate = candidate;
+    }
+    if (editableCandidate) return { input: editableCandidate, diagnostics };
+    if (count === 0)
+      diagnostics.push({
+        selector,
+        count: 0,
+        visibleCount: 0,
+        editableCandidate: false,
+      });
+    else
+      diagnostics.push({
+        selector,
+        count,
+        visibleCount,
+        editableCandidate: false,
+      });
+  }
+  return { input: undefined, diagnostics };
+}
+
+/**
  * Use the already attached Playwright Extension session to transport one
  * external-Chief handoff. This helper never writes a verdict; the caller
  * performs Ralph's existing schema and binding checks before writing it.
@@ -203,15 +272,26 @@ function extensionRoundtripCode(
     const deadline = Date.now() + ${timeoutMs};
     if (!page.url().startsWith(expectedUrl))
       throw new Error("CONVERSATION_NOT_FOUND: " + page.url());
+    const findFirstEditableInput = ${findFirstEditableInput.toString()};
     let input;
+    let inputDiagnostics = [];
     while (!input && Date.now() < deadline) {
-      for (const selector of ${JSON.stringify(INPUT_SELECTORS)}) {
-        const locator = page.locator(selector).last();
-        try { if (await locator.isVisible()) { input = locator; break; } } catch {}
-      }
+      const selection = await findFirstEditableInput(
+        page,
+        ${JSON.stringify(INPUT_SELECTORS)}
+      );
+      input = selection.input;
+      inputDiagnostics = selection.diagnostics;
       if (!input) await page.waitForTimeout(250);
     }
-    if (!input) throw new Error("INPUT_NOT_FOUND");
+    if (!input) {
+      const diagnostics = {
+        url: page.url(),
+        title: await page.title(),
+        candidates: inputDiagnostics,
+      };
+      throw new Error("INPUT_NOT_FOUND: " + JSON.stringify(diagnostics));
+    }
     await input.fill(message);
     await input.press("Enter");
     let reply = "";
@@ -238,12 +318,10 @@ function extensionRoundtripCode(
 function runPlaywrightCli(session, code, env, timeoutMs) {
   return new Promise((resolveResult) => {
     const child = spawn(
-      "pnpm",
+      "npx",
       [
-        "dlx",
         "--yes",
-        "--package=@playwright/cli",
-        "playwright-cli",
+        "@playwright/cli@latest",
         `-s=${session}`,
         "run-code",
         code,
@@ -288,15 +366,8 @@ function runPlaywrightCli(session, code, env, timeoutMs) {
 function runCliCommand(session, args, env, timeoutMs) {
   return new Promise((resolveResult) => {
     const child = spawn(
-      "pnpm",
-      [
-        "dlx",
-        "--yes",
-        "--package=@playwright/cli",
-        "playwright-cli",
-        `-s=${session}`,
-        ...args,
-      ],
+      "npx",
+      ["--yes", "@playwright/cli@latest", `-s=${session}`, ...args],
       { env, stdio: ["ignore", "pipe", "pipe"] }
     );
     let stdout = "";
