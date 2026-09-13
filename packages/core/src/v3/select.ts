@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { writeJsonAtomic, writeTextAtomic } from "./atomic-json.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  writeJsonAtomic,
+  writeJsonImmutable,
+  writeTextAtomic,
+} from "./atomic-json.js";
 import { assertProjectState, assertRunState } from "./state-invariants.js";
 import { getChiefRunDir, getRoundDir } from "./rounds.js";
 import {
@@ -495,16 +499,6 @@ async function readJsonFile(path: string): Promise<unknown | undefined> {
     throw error;
   }
 }
-async function writeExclusive(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const handle = await open(path, "wx");
-  try {
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
-  } finally {
-    await handle.close();
-  }
-}
-
 async function applyFromAuthoritative(
   projectRoot: string,
   runId: string,
@@ -562,7 +556,7 @@ async function applyFromAuthoritative(
         "SELECT decision project_state_hash does not match current project state"
       );
     validateChiefSelectDecision(decision, projectState);
-    await writeExclusive(decisionPath, decision);
+    await writeJsonImmutable(decisionPath, decision);
   } else {
     decision = parseChiefSelectDecision(storedRaw);
     if (
@@ -608,7 +602,7 @@ async function applyFromAuthoritative(
       );
     validateChiefSelectDecision(decision, projectState);
     transition = transitionFor(decision, currentRunState, projectState);
-    await writeExclusive(transitionPath, transition);
+    await writeJsonImmutable(transitionPath, transition);
   }
   const projectNow = await loadProjectStateFromProject(projectRoot);
   const projectNowHash = hashProjectState(projectNow);

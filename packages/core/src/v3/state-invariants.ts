@@ -153,6 +153,17 @@ export function assertProjectState(
         fail(`task ${task.id} depends on unknown task: ${dependency}`);
     }
   }
+  const activeTasks = value.tasks.filter(
+    (task) => task.status === "in_progress"
+  );
+  if (activeTasks.length > 1)
+    fail("PROJECT_STATE cannot contain more than one in_progress task");
+  if (activeTasks.length === 0) {
+    if (value.current_task_id !== null)
+      fail("current_task_id must be null when no task is in_progress");
+  } else if (value.current_task_id !== activeTasks[0].id) {
+    fail("current_task_id must match the in_progress task");
+  }
   if (value.current_task_id !== null && !ids.has(value.current_task_id))
     fail("current_task_id is not present in tasks");
   iso(value.created_at, "created_at");

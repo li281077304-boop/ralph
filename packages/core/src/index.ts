@@ -74,7 +74,12 @@ export {
   type FutureWaitingHandoff,
 } from "./v3/state.js";
 export { assertRunState, assertProjectState } from "./v3/state-invariants.js";
-export { writeJsonAtomic, writeTextAtomic } from "./v3/atomic-json.js";
+export {
+  writeJsonAtomic,
+  writeTextAtomic,
+  writeJsonImmutable,
+  writeTextImmutable,
+} from "./v3/atomic-json.js";
 export {
   PHASE_REGISTRY,
   phaseDefinition,

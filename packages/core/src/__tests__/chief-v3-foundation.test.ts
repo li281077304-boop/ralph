@@ -48,7 +48,7 @@ function project(): ProjectState {
     goal: "goal",
     status: "active",
     current_milestone: "m1",
-    current_task_id: "t1",
+    current_task_id: null,
     tasks: [
       {
         id: "t1",
@@ -114,6 +114,35 @@ describe("Chief V3 durable foundation", () => {
       /depends on itself/
     );
     expect(() => parseProjectState(run())).toThrow(/Invalid durable state/);
+  });
+
+  it("enforces a single active task and matching current_task_id", () => {
+    const queuedWithCurrent = project();
+    queuedWithCurrent.current_task_id = "t1";
+    expect(() => assertProjectState(queuedWithCurrent)).toThrow(
+      /current_task_id/
+    );
+
+    const activeWithoutCurrent = project();
+    activeWithoutCurrent.tasks[0].status = "in_progress";
+    expect(() => assertProjectState(activeWithoutCurrent)).toThrow(
+      /current_task_id/
+    );
+
+    const mismatched = project();
+    mismatched.tasks[0].status = "in_progress";
+    mismatched.current_task_id = "other";
+    expect(() => assertProjectState(mismatched)).toThrow(/current_task_id/);
+
+    const multiple = project();
+    multiple.tasks.push({
+      ...multiple.tasks[0],
+      id: "t2",
+      status: "in_progress",
+    });
+    multiple.tasks[0].status = "in_progress";
+    multiple.current_task_id = "t1";
+    expect(() => assertProjectState(multiple)).toThrow(/more than one/);
   });
 
   it("atomically saves, reloads, and preserves the exact current phase", async () => {

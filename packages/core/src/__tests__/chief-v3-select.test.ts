@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,6 +16,7 @@ import {
   getChiefRunDir,
   getRoundDir,
   saveRunState,
+  writeJsonImmutable,
   writeJsonAtomic,
   type ChiefSelectDecision,
   type ProjectState,
@@ -119,6 +120,7 @@ describe("Chief V3 SELECT and project plan", () => {
       task("finished", "done"),
       task("cancelled", "cancelled"),
     ]);
+    state.current_task_id = "working";
     expect(getReadyTasks(state).map((item) => item.id)).toEqual([
       "independent",
       "unlocked",
@@ -397,5 +399,36 @@ describe("Chief V3 SELECT and project plan", () => {
     await expect(applySelectDecision(root, "run-1")).rejects.toThrow(
       /neither the expected/
     );
+  });
+
+  it("publishes immutable SELECT artifacts atomically without clobbering", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ralph-v3-immutable-"));
+    const state = project();
+    const preparedState = await prepareForTest(root, state, run());
+    const valid = decision({
+      handoff_hash: preparedState.handoff.handoff_hash,
+      project_state_hash: preparedState.handoff.project_state_hash,
+    });
+    await applySelectDecision(root, "run-1", valid);
+    const roundDir = getRoundDir(getChiefRunDir(root, "run-1"), 1);
+    const decisionPath = join(roundDir, "select_decision.json");
+    const transitionPath = join(roundDir, "select_transition.json");
+    const decisionBefore = await readFile(decisionPath, "utf8");
+    const transitionBefore = await readFile(transitionPath, "utf8");
+    await expect(
+      writeJsonImmutable(decisionPath, { ...valid, why_now: "replacement" })
+    ).rejects.toMatchObject({ code: "EEXIST" });
+    await expect(
+      writeJsonImmutable(transitionPath, { replacement: true })
+    ).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await readFile(decisionPath, "utf8")).toBe(decisionBefore);
+    expect(await readFile(transitionPath, "utf8")).toBe(transitionBefore);
+    expect(JSON.parse(decisionBefore)).toMatchObject({
+      action: "CONTINUE_DEVELOPMENT",
+    });
+    expect(JSON.parse(transitionBefore)).toHaveProperty("decision_hash");
+    expect(
+      (await readdir(roundDir)).filter((name) => name.endsWith(".tmp"))
+    ).toEqual([]);
   });
 });
