@@ -9,6 +9,7 @@ export type ChiefAgentConfig = {
   agent: AgentName;
   model?: string;
   reasoning_effort?: string;
+  mode?: "stage" | "native_goal";
 };
 
 export type ChiefGuiBridgeConfig = {
@@ -153,14 +154,18 @@ function agentConfig(
     throw new Error(`${key}.agent must be codex or claude`);
   const model = record.model ?? fallback.model;
   const reasoning = record.reasoning_effort ?? fallback.reasoning_effort;
+  const mode = record.mode ?? fallback.mode;
   if (model !== undefined && typeof model !== "string")
     throw new Error(`${key}.model must be a string`);
   if (reasoning !== undefined && typeof reasoning !== "string")
     throw new Error(`${key}.reasoning_effort must be a string`);
+  if (mode !== undefined && mode !== "stage" && mode !== "native_goal")
+    throw new Error(`${key}.mode must be stage or native_goal`);
   return {
     agent,
     model: model as string | undefined,
     reasoning_effort: reasoning as string | undefined,
+    ...(mode !== undefined ? { mode: mode as "stage" | "native_goal" } : {}),
   };
 }
 

@@ -23,12 +23,14 @@ import {
 import { assertProjectState, assertRunState } from "./state-invariants.js";
 import { writeJsonAtomic, writeTextAtomic } from "./atomic-json.js";
 import { parseChiefReviewDecision } from "./review.js";
+import { runNativeGoalWorker, type GoalTransport } from "./goal-worker.js";
 
 export type V3WorkerConfig = {
   worker: {
     agent: "codex" | "claude";
     model?: string;
     reasoning_effort?: string;
+    mode?: "stage" | "native_goal";
   };
   forbidden_paths?: string[];
   protected_paths?: string[];
@@ -273,6 +275,8 @@ export async function runWorkerPhase(options: {
   runId: string;
   config: V3WorkerConfig;
   runAgent?: V3WorkerRunner;
+  /** Test seam for a protocol-level fake; production leaves this undefined. */
+  goalTransport?: GoalTransport;
 }): Promise<WorkerPhaseResult> {
   const root = options.projectRoot;
   const path = runPath(root, options.runId);
@@ -358,20 +362,37 @@ export async function runWorkerPhase(options: {
     options.runAgent ?? defaultRunner(options.config, root, runDir);
   let worker: { text: string; meta: StageMeta; error?: string };
   try {
-    worker = await runner(
-      {
-        name: "worker",
-        template: "chief-worker.md",
-        permissionMode: "bypassPermissions",
-        agent: options.config.worker.agent,
+    if (options.config.worker.mode === "native_goal") {
+      if (options.config.worker.agent !== "codex")
+        throw new Error("Native Goal Worker requires the codex agent");
+      const goal = await runNativeGoalWorker({
+        projectRoot: root,
+        runId: run.run_id,
+        round: run.round,
+        taskId: task.id,
+        prompt,
         model: options.config.worker.model,
         reasoningEffort: options.config.worker.reasoning_effort,
-      },
-      prompt,
-      root,
-      run.round,
-      { readOnlyWorkspace: false, dockerSocket: "off" }
-    );
+        packageDir: options.config.package_dir,
+        transport: options.goalTransport,
+      });
+      worker = goal as typeof worker;
+    } else {
+      worker = await runner(
+        {
+          name: "worker",
+          template: "chief-worker.md",
+          permissionMode: "bypassPermissions",
+          agent: options.config.worker.agent,
+          model: options.config.worker.model,
+          reasoningEffort: options.config.worker.reasoning_effort,
+        },
+        prompt,
+        root,
+        run.round,
+        { readOnlyWorkspace: false, dockerSocket: "off" }
+      );
+    }
   } catch (error) {
     worker = {
       text: "",
@@ -381,6 +402,18 @@ export async function runWorkerPhase(options: {
   }
   await writeJsonAtomic(outputPath, worker);
   if (worker.error) {
+    const goalStatus = (worker as { goalStatus?: string }).goalStatus;
+    if (goalStatus === "blocked") {
+      const waiting: RunState = {
+        ...run,
+        phase: "HUMAN_REQUIRED",
+        status: "waiting",
+        failure_reason: worker.error,
+        updated_at: new Date().toISOString(),
+      };
+      await saveRunState(path, waiting);
+      return { runState: waiting, projectState: project, worker };
+    }
     const failed = failState(run, `Worker execution failed: ${worker.error}`);
     await saveRunState(path, failed);
     return { runState: failed, projectState: project, worker };

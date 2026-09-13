@@ -157,6 +157,17 @@ export {
   type WorkerPhaseResult,
 } from "./v3/worker.js";
 export {
+  GOAL_STATUSES,
+  NativeCodexGoalTransport,
+  runNativeGoalWorker,
+  type GoalStatus,
+  type GoalRecord,
+  type GoalTransport,
+  type GoalWaitResult,
+  type GoalWorkerArtifact,
+  type GoalWorkerResult,
+} from "./v3/goal-worker.js";
+export {
   runMachineGatePhase,
   type V3GateConfig,
   type MachineGatePhaseResult,

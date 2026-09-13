@@ -28,6 +28,7 @@ chief:
 worker:
   agent: codex
   model: gpt-5.6-terra
+  # mode: native_goal # optional host Codex app-server Goal worker; omitted = stage runner
 
 # Optional external-Chief transport through an already attached Playwright
 # Extension session. Keep the token in a private environment file.

@@ -13,6 +13,7 @@ import { runMachineGatePhase } from "./machine-gate.js";
 import { runCheckpointPhase } from "./checkpoint.js";
 import { dispatchPhase } from "./phases.js";
 import type { MachineGateOptions, MachineGateResult } from "../machine-gate.js";
+import type { GoalTransport } from "./goal-worker.js";
 
 export type V3WorkConfig = V3WorkerConfig & {
   commands?: string[];
@@ -37,6 +38,8 @@ export async function runV3WorkSlice(options: {
   runId: string;
   config: V3WorkConfig;
   runAgent?: V3WorkerRunner;
+  /** Test seam for a protocol-level fake; production leaves this undefined. */
+  goalTransport?: GoalTransport;
   runGate?: (
     workspaceDir: string,
     options: MachineGateOptions
@@ -64,6 +67,7 @@ export async function runV3WorkSlice(options: {
               runId: options.runId,
               config: options.config,
               runAgent: options.runAgent,
+              goalTransport: options.goalTransport,
             }),
         })) as Awaited<ReturnType<typeof runWorkerPhase>>;
         state = worker.runState;
