@@ -182,3 +182,8 @@ export {
   type V3WorkConfig,
   type V3WorkResult,
 } from "./v3/work.js";
+export {
+  runV3UnattendedTask,
+  type UnattendedResult,
+  type UnattendedStatus,
+} from "./v3/auto.js";
