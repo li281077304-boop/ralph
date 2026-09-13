@@ -100,3 +100,29 @@ export {
   type LockInspection,
   type LockKind,
 } from "./v3/lock.js";
+export {
+  PROJECT_STATE_RELATIVE_PATH,
+  PROJECT_PLAN_RELATIVE_PATH,
+  projectStatePath,
+  projectPlanPath,
+  canonicalizeValue,
+  canonicalizeProjectState,
+  hashProjectState,
+  getReadyTasks,
+  renderProjectPlan,
+  loadProjectStateFromProject,
+  saveProjectStateToProject,
+} from "./v3/project-plan.js";
+export {
+  SELECT_HANDOFF_KIND,
+  parseChiefSelectDecision,
+  validateChiefSelectDecision,
+  prepareSelectHandoff,
+  applySelectDecision,
+  type SelectAction,
+  type ReferenceDecision,
+  type ReferenceCheck,
+  type ChiefSelectDecision,
+  type SelectHandoff,
+  type SelectPreparation,
+} from "./v3/select.js";

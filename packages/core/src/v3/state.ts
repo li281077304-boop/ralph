@@ -27,10 +27,12 @@ export type TaskStatus =
 export interface ProjectTask {
   id: string;
   title: string;
+  goal: string;
   status: TaskStatus;
   priority: number;
   dependencies: string[];
   acceptance: string[];
+  verification: string[];
   evidence: string[];
   source: string;
   created_round: number;
@@ -51,8 +53,12 @@ export interface ProjectState {
 }
 
 export interface WaitingHandoff {
+  kind?: "select" | "review" | "final_review";
+  run_id?: string;
+  round?: number;
   handoff_path: string;
   handoff_hash: string;
+  project_state_hash?: string;
   created_at: string;
 }
 

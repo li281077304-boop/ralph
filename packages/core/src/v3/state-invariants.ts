@@ -80,10 +80,12 @@ function assertTask(value: unknown): asserts value is ProjectTask {
     [
       "id",
       "title",
+      "goal",
       "status",
       "priority",
       "dependencies",
       "acceptance",
+      "verification",
       "evidence",
       "source",
       "created_round",
@@ -92,13 +94,14 @@ function assertTask(value: unknown): asserts value is ProjectTask {
     ],
     "task"
   );
-  for (const field of ["id", "title", "source"])
+  for (const field of ["id", "title", "goal", "source"])
     string(value[field], `task.${field}`);
   if (typeof value.status !== "string" || !taskStatuses.has(value.status))
     fail("task.status is unknown");
   integer(value.priority, "task.priority");
   stringArray(value.dependencies, "task.dependencies");
   stringArray(value.acceptance, "task.acceptance");
+  stringArray(value.verification, "task.verification");
   stringArray(value.evidence, "task.evidence");
   integer(value.created_round, "task.created_round", 1);
   integer(value.updated_round, "task.updated_round", 1);
@@ -209,11 +212,35 @@ export function assertRunState(value: unknown): asserts value is RunState {
       fail("waiting_handoff must be an object");
     knownKeys(
       value.waiting_handoff,
-      ["handoff_path", "handoff_hash", "created_at"],
+      [
+        "kind",
+        "run_id",
+        "round",
+        "handoff_path",
+        "handoff_hash",
+        "project_state_hash",
+        "created_at",
+      ],
       "waiting_handoff"
     );
+    if (
+      value.waiting_handoff.kind !== undefined &&
+      !["select", "review", "final_review"].includes(
+        value.waiting_handoff.kind as string
+      )
+    )
+      fail("waiting_handoff.kind is unknown");
+    if (value.waiting_handoff.run_id !== undefined)
+      string(value.waiting_handoff.run_id, "waiting_handoff.run_id");
+    if (value.waiting_handoff.round !== undefined)
+      integer(value.waiting_handoff.round, "waiting_handoff.round", 1);
     string(value.waiting_handoff.handoff_path, "waiting_handoff.handoff_path");
     string(value.waiting_handoff.handoff_hash, "waiting_handoff.handoff_hash");
+    if (value.waiting_handoff.project_state_hash !== undefined)
+      string(
+        value.waiting_handoff.project_state_hash,
+        "waiting_handoff.project_state_hash"
+      );
     iso(value.waiting_handoff.created_at, "waiting_handoff.created_at");
     if (!waitingPhases.has(value.phase))
       fail("waiting_handoff only valid in a waiting phase");

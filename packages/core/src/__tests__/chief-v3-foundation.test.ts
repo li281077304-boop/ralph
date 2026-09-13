@@ -53,10 +53,12 @@ function project(): ProjectState {
       {
         id: "t1",
         title: "task",
+        goal: "deliver the task",
         status: "queued",
         priority: 1,
         dependencies: [],
         acceptance: ["gate"],
+        verification: ["pnpm test"],
         evidence: [],
         source: "user",
         created_round: 1,
