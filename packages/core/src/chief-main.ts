@@ -119,6 +119,7 @@ async function startChief(
     packageDir,
     ralphDir: resolve(process.env.RALPH_DOCKER_CONTEXT ?? packageDir),
     config,
+    runId: flags.runId,
     taskPath,
     acceptancePath: configPath,
     externalChiefBridge: options.externalChiefBridge,
