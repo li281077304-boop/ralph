@@ -199,10 +199,34 @@ describe("Chief V3 durable foundation", () => {
       started_at: timestamp,
       updated_at: timestamp,
     });
-    expect((await inspectActiveWriterLock(dir, "old")).kind).toBe(
-      "stale_same_host"
+    const staleEvidence = await inspectActiveWriterLock(dir, "old");
+    expect(staleEvidence.kind).toBe("stale_same_host");
+    expect(await clearStaleActiveWriterLock(dir, staleEvidence)).toBe(true);
+    await writeJsonAtomic(activeWriterLockPath(dir), {
+      version: 1,
+      run_id: "stale-a",
+      run_state_path: "x",
+      pid: 999999,
+      hostname: (await import("node:os")).hostname(),
+      cwd: dir,
+      started_at: timestamp,
+      updated_at: timestamp,
+    });
+    const staleA = await inspectActiveWriterLock(dir, "stale-a");
+    await writeJsonAtomic(activeWriterLockPath(dir), {
+      version: 1,
+      run_id: "replacement-live",
+      run_state_path: "replacement",
+      pid: process.pid,
+      hostname: (await import("node:os")).hostname(),
+      cwd: dir,
+      started_at: timestamp,
+      updated_at: timestamp,
+    });
+    expect(await clearStaleActiveWriterLock(dir, staleA)).toBe(false);
+    expect((await inspectActiveWriterLock(dir, "another-run")).kind).toBe(
+      "live_different_run"
     );
-    expect(await clearStaleActiveWriterLock(dir, "old")).toBe(true);
     await writeJsonAtomic(activeWriterLockPath(dir), {
       version: 1,
       run_id: "foreign",

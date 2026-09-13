@@ -1,5 +1,5 @@
 import { mkdir, open, readFile, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { hostname } from "node:os";
 import { writeJsonAtomic } from "./atomic-json.js";
 
@@ -36,7 +36,7 @@ export class ActiveWriterLockError extends Error {
 }
 
 function lockPath(projectRoot: string): string {
-  return join(projectRoot, ".ralph", "chief-active-run.lock");
+  return join(resolve(projectRoot), ".ralph", "chief-active-run.lock");
 }
 async function processIsAlive(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -107,20 +107,24 @@ export async function acquireActiveWriterLock(
   metadata: Pick<ActiveWriterLock, "run_id" | "run_state_path">
 ): Promise<ActiveWriterLock> {
   await mkdir(dirname(lockPath(projectRoot)), { recursive: true });
+  const normalizedRoot = resolve(projectRoot);
   const now = new Date().toISOString();
   const lock: ActiveWriterLock = {
     version: 1,
     ...metadata,
     pid: process.pid,
     hostname: hostname(),
-    cwd: projectRoot,
+    cwd: normalizedRoot,
     started_at: now,
     updated_at: now,
   };
   try {
-    const handle = await open(lockPath(projectRoot), "wx");
-    await handle.writeFile(`${JSON.stringify(lock, null, 2)}\n`, "utf8");
-    await handle.close();
+    const handle = await open(lockPath(normalizedRoot), "wx");
+    try {
+      await handle.writeFile(`${JSON.stringify(lock, null, 2)}\n`, "utf8");
+    } finally {
+      await handle.close();
+    }
     return lock;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -167,12 +171,29 @@ export async function releaseActiveWriterLock(
 
 export async function clearStaleActiveWriterLock(
   projectRoot: string,
-  requestedRunId?: string
+  staleEvidence: LockInspection
 ): Promise<boolean> {
-  const inspection = await inspectActiveWriterLock(projectRoot, requestedRunId);
+  if (
+    (staleEvidence.kind !== "stale_same_host" &&
+      staleEvidence.kind !== "stale_different_run") ||
+    !staleEvidence.lock
+  )
+    return false;
+  const expected = staleEvidence.lock;
+  const inspection = await inspectActiveWriterLock(
+    projectRoot,
+    expected.run_id
+  );
   if (
     inspection.kind !== "stale_same_host" &&
     inspection.kind !== "stale_different_run"
+  )
+    return false;
+  if (
+    !inspection.lock ||
+    inspection.lock.run_id !== expected.run_id ||
+    inspection.lock.pid !== expected.pid ||
+    inspection.lock.hostname !== expected.hostname
   )
     return false;
   await rm(lockPath(projectRoot), { force: true });
