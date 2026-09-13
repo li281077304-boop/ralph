@@ -71,10 +71,14 @@ export async function resumeTechnicalBlockedWorker(options: {
   const root = resolve(options.projectRoot);
   const statePath = runPath(root, options.runId);
   const state = await loadRunState(statePath);
-  const technicalBlocked =
-    state.failure_reason === "GOAL_STATUS:blocked" &&
-    (state.phase === "HUMAN_REQUIRED" || state.phase === "FAILED");
-  if (!technicalBlocked)
+  const technicalBlockedReason = state.failure_reason === "GOAL_STATUS:blocked";
+  const interruptedRecovery =
+    state.failure_reason ===
+    "WORKER requires a clean Git worktree before execution";
+  if (
+    (!technicalBlockedReason && !interruptedRecovery) ||
+    (state.phase !== "HUMAN_REQUIRED" && state.phase !== "FAILED")
+  )
     throw new Error("run is not a resumable technical Goal block");
   const project = await loadProjectStateFromProject(root);
   if (
@@ -98,11 +102,13 @@ export async function resumeTechnicalBlockedWorker(options: {
     state.round,
     "goal_worker.blocked.json"
   );
+  let evidenceValidated = false;
   try {
     const raw = await readFile(goalPath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (parsed.latest_goal_status !== "blocked")
       throw new Error("technical Goal recovery artifact is not blocked");
+    evidenceValidated = true;
     // Preserve the complete terminal evidence; never overwrite an existing
     // audit copy if a previous recovery attempt already created one.
     try {
@@ -113,6 +119,25 @@ export async function resumeTechnicalBlockedWorker(options: {
     await unlink(goalPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!evidenceValidated && interruptedRecovery) {
+    try {
+      const archived = JSON.parse(
+        await readFile(blockedPath, "utf8")
+      ) as Record<string, unknown>;
+      if (
+        archived.run_id !== state.run_id ||
+        archived.round !== state.round ||
+        archived.task_id !== state.current_task_id ||
+        archived.latest_goal_status !== "blocked"
+      )
+        throw new Error("technical Goal recovery artifact is not blocked");
+      evidenceValidated = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        throw new Error("technical Goal recovery evidence is missing");
+      throw error;
+    }
   }
   const { failure_reason: _failureReason, ...withoutFailure } = state;
   const next: RunState = {
@@ -430,7 +455,26 @@ export async function runWorkerPhase(options: {
       snapshot: guard.snapshot(),
     };
   }
-  if (cleanStatus(root) !== "") {
+  const technicalRecoveryArtifact = artifact(
+    root,
+    run.run_id,
+    run.round,
+    "goal_worker.blocked.json"
+  );
+  let technicalRecovery = false;
+  try {
+    const recovery = JSON.parse(
+      await readFile(technicalRecoveryArtifact, "utf8")
+    ) as Record<string, unknown>;
+    technicalRecovery =
+      recovery.run_id === run.run_id &&
+      recovery.round === run.round &&
+      recovery.task_id === task.id &&
+      recovery.latest_goal_status === "blocked";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (cleanStatus(root) !== "" && !technicalRecovery) {
     const failed = failState(
       run,
       "WORKER requires a clean Git worktree before execution"
@@ -542,6 +586,8 @@ export async function runWorkerPhase(options: {
     created_at: new Date().toISOString(),
   };
   await writeJsonAtomic(evidencePath, evidence);
+  if (technicalRecovery)
+    await unlink(technicalRecoveryArtifact).catch(() => undefined);
   if (violations.length) {
     const failed = failState(
       run,
