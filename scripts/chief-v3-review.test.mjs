@@ -48,6 +48,17 @@ async function seed(gatePassed = true) {
   git(bare, ["init", "-q", "--bare"]);
   git(root, ["remote", "add", "origin", bare]);
   git(root, ["push", "-q", "-u", "origin", "feature/test"]);
+  git(root, [
+    "remote",
+    "set-url",
+    "origin",
+    "https://github.com/acme/ralph.git",
+  ]);
+  git(root, [
+    "config",
+    `url.${bare}.insteadOf`,
+    "https://github.com/acme/ralph.git",
+  ]);
   const runId = `review-${Math.random().toString(16).slice(2)}`;
   await saveProjectStateToProject(root, {
     version: 1,
@@ -330,6 +341,127 @@ test("malformed Review replies preserve WAITING_FOR_CHIEF", async () => {
   assert.equal(state.phase, "WAITING_FOR_CHIEF");
 });
 
+test("waiting Review revalidates current remote identity before GUI", async () => {
+  const f = await seed(true);
+  await assert.rejects(
+    runV3ReviewTransport({
+      projectRoot: f.root,
+      runId: f.runId,
+      transport: async () => {
+        throw new Error("stop after handoff");
+      },
+    })
+  );
+  git(f.root, [
+    "remote",
+    "set-url",
+    "origin",
+    "https://github.com/other/ralph.git",
+  ]);
+  git(f.root, [
+    "config",
+    `url.${f.bare}.insteadOf`,
+    "https://github.com/other/ralph.git",
+  ]);
+  const calls = { count: 0 };
+  await assert.rejects(
+    runV3ReviewTransport({
+      projectRoot: f.root,
+      runId: f.runId,
+      transport: transport(calls),
+    }),
+    /current Git remote repository/
+  );
+  assert.equal(calls.count, 0);
+});
+
+test("modified waiting Review handoff is rejected before GUI", async () => {
+  const f = await seed(true);
+  await assert.rejects(
+    runV3ReviewTransport({
+      projectRoot: f.root,
+      runId: f.runId,
+      transport: async () => {
+        throw new Error("stop after handoff");
+      },
+    })
+  );
+  const handoffPath = join(
+    getChiefRunDir(f.root, f.runId),
+    "rounds/001/review_handoff.md"
+  );
+  await writeFile(
+    handoffPath,
+    `${await readFile(handoffPath, "utf8")}tampered\n`
+  );
+  const calls = { count: 0 };
+  await assert.rejects(
+    runV3ReviewTransport({
+      projectRoot: f.root,
+      runId: f.runId,
+      transport: transport(calls),
+    }),
+    /handoff content has changed/
+  );
+  assert.equal(calls.count, 0);
+});
+
+test("corrupted Review transition journals fail closed", async () => {
+  const variants = [
+    ["after_project_state", /project hash is invalid/],
+    ["after_run_state", /run hash is invalid/],
+    ["action", /action does not match/],
+  ];
+  for (const [field, expected] of variants) {
+    const f = await seed(true);
+    await assert.rejects(
+      runV3ReviewTransport({
+        projectRoot: f.root,
+        runId: f.runId,
+        transport: async () => {
+          throw new Error("stop after handoff");
+        },
+      })
+    );
+    const waiting = JSON.parse(
+      await readFile(
+        join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json"),
+        "utf8"
+      )
+    );
+    await runV3ReviewTransport({
+      projectRoot: f.root,
+      runId: f.runId,
+      transport: transport({ count: 0 }),
+    });
+    await saveRunState(
+      join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json"),
+      waiting
+    );
+    const transitionPath = join(
+      getChiefRunDir(f.root, f.runId),
+      "rounds/001/review_transition.json"
+    );
+    const transition = JSON.parse(await readFile(transitionPath, "utf8"));
+    if (field === "after_project_state")
+      transition.after_project_state.goal = "tampered";
+    if (field === "after_run_state")
+      transition.after_run_state.updated_at = "2020-01-01T00:00:00.000Z";
+    if (field === "action") transition.action = "PATCH";
+    await writeFile(transitionPath, JSON.stringify(transition, null, 2) + "\n");
+    await assert.rejects(
+      runV3ReviewTransport({
+        projectRoot: f.root,
+        runId: f.runId,
+        transport: async () => {
+          throw new Error("GUI must not run");
+        },
+      }),
+      expected
+    );
+  }
+});
+
 test("PATCH keeps task active, advances round, and reaches Worker with patch context", async () => {
   const f = await seed(true);
   const calls = { count: 0 };
@@ -355,6 +487,72 @@ test("PATCH keeps task active, advances round, and reaches Worker with patch con
     },
     runGate: async () => ({ passed: true, commands: [] }),
   });
+});
+
+test("PASS review context cannot authorize a Worker continuation", async () => {
+  const f = await seed(true);
+  await runV3ReviewTransport({
+    projectRoot: f.root,
+    runId: f.runId,
+    transport: transport({ count: 0 }),
+  });
+  const runPath = join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json");
+  const run = JSON.parse(await readFile(runPath, "utf8"));
+  await saveRunState(runPath, {
+    ...run,
+    phase: "WORKER",
+    status: "running",
+    round: 2,
+    current_task_id: "task-1",
+  });
+  let invoked = 0;
+  await assert.rejects(
+    runV3WorkSlice({
+      projectRoot: f.root,
+      runId: f.runId,
+      config: config(),
+      runAgent: async () => {
+        invoked += 1;
+        return { text: "should not run", meta: {} };
+      },
+      runGate: async () => ({ passed: true, commands: [] }),
+    })
+  );
+  assert.equal(invoked, 0);
+});
+
+test("PATCH continuation rejects a previous checkpoint for another task", async () => {
+  const f = await seed(true);
+  await runV3ReviewTransport({
+    projectRoot: f.root,
+    runId: f.runId,
+    transport: transport(
+      { count: 0 },
+      { action: "PATCH", patch_instructions: ["fix"] }
+    ),
+  });
+  const checkpointPath = join(
+    getChiefRunDir(f.root, f.runId),
+    "rounds/001/checkpoint.json"
+  );
+  const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+  checkpoint.task_id = "other-task";
+  await writeFile(checkpointPath, JSON.stringify(checkpoint, null, 2) + "\n");
+  let invoked = 0;
+  await assert.rejects(
+    runV3WorkSlice({
+      projectRoot: f.root,
+      runId: f.runId,
+      config: config(),
+      runAgent: async () => {
+        invoked += 1;
+        return { text: "should not run", meta: {} };
+      },
+      runGate: async () => ({ passed: true, commands: [] }),
+    }),
+    /task continuity/
+  );
+  assert.equal(invoked, 0);
 });
 
 test("HUMAN_REQUIRED pauses without changing round or task", async () => {

@@ -14,6 +14,7 @@ import {
   parseChiefReviewDecision,
   prepareReviewHandoff,
   releaseActiveWriterLock,
+  verifyReviewCheckpoint,
 } from "@daonhan/ralph-core";
 import { runExternalChiefGuiRoundtrip } from "./ralph-gui-chief-bridge.js";
 import { extractMarkedJsonBlock } from "./ralph-gui-bridge.js";
@@ -51,6 +52,7 @@ async function existingReviewHandoff(projectRoot, runState) {
       run_id: waiting.run_id,
       round: waiting.round,
       handoff_hash: waiting.handoff_hash,
+      handoff_content_hash: waiting.handoff_content_hash,
       project_state_hash: waiting.project_state_hash,
       checkpoint_hash: waiting.checkpoint_hash,
       gate_artifact_hash: waiting.gate_artifact_hash,
@@ -125,6 +127,7 @@ export async function runV3ReviewTransport(options) {
     if (runState.phase === "CHIEF_REVIEW" && runState.status === "running")
       preparation = await prepareReviewHandoff(projectRoot, runId);
     else {
+      await verifyReviewCheckpoint(projectRoot, runId);
       preparation = await existingReviewHandoff(projectRoot, runState);
       if (!preparation)
         throw new Error(

@@ -61,6 +61,7 @@ export interface ReviewHandoff {
   run_id: string;
   round: number;
   handoff_hash: string;
+  handoff_content_hash: string;
   project_state_hash: string;
   checkpoint_hash: string;
   gate_artifact_hash: string;
@@ -100,6 +101,47 @@ interface ReviewTransition {
   created_at: string;
 }
 
+function assertReviewTransition(
+  value: unknown
+): asserts value is ReviewTransition {
+  if (!record(value))
+    throw new Error("Review transition artifact is malformed");
+  exactKeys(
+    value,
+    [
+      "version",
+      "decision_hash",
+      "before_project_state_hash",
+      "after_project_state_hash",
+      "before_run_state_hash",
+      "after_run_state_hash",
+      "action",
+      "after_project_state",
+      "after_run_state",
+      "created_at",
+    ],
+    "transition"
+  );
+  if (value.version !== 1)
+    throw new Error("Review transition version is invalid");
+  for (const field of [
+    "decision_hash",
+    "before_project_state_hash",
+    "after_project_state_hash",
+    "before_run_state_hash",
+    "after_run_state_hash",
+  ])
+    shaValue(value[field], `transition.${field}`);
+  if (
+    typeof value.action !== "string" ||
+    !["PASS", "PATCH", "HUMAN_REQUIRED"].includes(value.action)
+  )
+    throw new Error("Review transition action is invalid");
+  assertProjectState(value.after_project_state);
+  assertRunState(value.after_run_state);
+  isoTimestamp(value.created_at, "transition.created_at");
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -135,6 +177,10 @@ function stringArray(value: unknown, field: string): asserts value is string[] {
 function shaValue(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value))
     fail(`${field} must be lowercase SHA-256`);
+}
+function isoTimestamp(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value)))
+    fail(`${field} must be an ISO timestamp`);
 }
 function gitShaValue(value: unknown, field: string): asserts value is string {
   if (
@@ -304,6 +350,16 @@ function repoFullName(remoteUrl: string): string {
     throw new Error("External GitHub Review requires a github.com remote");
   return match[1];
 }
+function checkpointRemoteUrl(root: string, remote: string): string {
+  // Ask Git for the effective remote first, then use the configured URL for
+  // identity parsing when an insteadOf rewrite masks the canonical origin.
+  const effective = git(root, ["remote", "get-url", remote]);
+  try {
+    return git(root, ["config", "--get", `remote.${remote}.url`]);
+  } catch {
+    return effective;
+  }
+}
 function clean(root: string): boolean {
   return (
     git(root, ["status", "--porcelain=v1", "--untracked-files=all"]) === ""
@@ -420,7 +476,33 @@ export async function verifyReviewCheckpoint(
   )
     throw new Error("Machine Gate evidence is not bound to checkpoint");
   const remoteUrl = String(checkpoint.remote_url ?? "");
-  const repo = repoFullName(remoteUrl);
+  const checkpointRepo = repoFullName(remoteUrl);
+  const currentRemoteUrl = checkpointRemoteUrl(
+    projectRoot,
+    String(checkpoint.remote)
+  );
+  const currentRepo = repoFullName(currentRemoteUrl);
+  if (currentRepo !== checkpointRepo)
+    throw new Error("current Git remote repository does not match checkpoint");
+  const waiting = run.waiting_handoff;
+  if (waiting?.kind === "review") {
+    if (
+      waiting.run_id !== runId ||
+      waiting.round !== run.round ||
+      waiting.handoff_path !==
+        roundPath(projectRoot, runId, run.round, "review_handoff.md")
+    )
+      throw new Error("waiting Review handoff identity is invalid");
+    if (waiting.project_state_hash !== hashProjectState(project))
+      throw new Error("waiting Review project_state_hash is stale");
+    if (waiting.checkpoint_hash !== checkpointHash)
+      throw new Error("waiting Review checkpoint_hash is stale");
+    if (waiting.gate_artifact_hash !== gateArtifactHash)
+      throw new Error("waiting Review gate_artifact_hash is stale");
+    const handoffContent = await readFile(waiting.handoff_path);
+    if (waiting.handoff_content_hash !== sha256(handoffContent))
+      throw new Error("waiting Review handoff content has changed");
+  }
   return {
     project,
     run,
@@ -429,7 +511,7 @@ export async function verifyReviewCheckpoint(
     checkpointHash,
     gate,
     gateArtifactHash,
-    repoFullName: repo,
+    repoFullName: currentRepo,
   };
 }
 
@@ -542,6 +624,7 @@ export async function prepareReviewHandoff(
     "review_handoff.md"
   );
   await writeTextAtomic(handoffPath, content);
+  const handoffContentHash = sha256(Buffer.from(content, "utf8"));
   const createdAt = new Date().toISOString();
   const waiting: ReviewWaitingHandoff = {
     kind: "review",
@@ -549,6 +632,7 @@ export async function prepareReviewHandoff(
     round: context.run.round,
     handoff_path: handoffPath,
     handoff_hash: handoffHash,
+    handoff_content_hash: handoffContentHash,
     project_state_hash: payload.project_state_hash,
     checkpoint_hash: context.checkpointHash,
     gate_artifact_hash: context.gateArtifactHash,
@@ -570,6 +654,7 @@ export async function prepareReviewHandoff(
       path: handoffPath,
       content,
       handoff_hash: handoffHash,
+      handoff_content_hash: handoffContentHash,
     },
   };
 }
@@ -592,25 +677,31 @@ function transitionFor(
           : task
       ),
     };
-    const { waiting_handoff: _waiting, ...withoutWaiting } = context.run;
+    const {
+      waiting_handoff: _waiting,
+      head_evidence: _headEvidence,
+      ...withoutWaiting
+    } = context.run;
     afterRun = {
       ...withoutWaiting,
       round: context.run.round + 1,
       phase: "SELECT",
       status: "running",
       current_task_id: null,
-      head_evidence: undefined,
       updated_at: now,
     };
   } else if (decision.action === "PATCH") {
-    const { waiting_handoff: _waiting, ...withoutWaiting } = context.run;
+    const {
+      waiting_handoff: _waiting,
+      head_evidence: _headEvidence,
+      ...withoutWaiting
+    } = context.run;
     afterRun = {
       ...withoutWaiting,
       round: context.run.round + 1,
       phase: "WORKER",
       status: "running",
       current_task_id: context.task.id,
-      head_evidence: undefined,
       updated_at: now,
     };
     afterProject = {
@@ -682,21 +773,18 @@ export async function applyReviewDecision(
   if (stored !== undefined && transitionRaw !== undefined) {
     const decision = parseChiefReviewDecision(stored);
     const transition = transitionRaw as ReviewTransition;
-    if (
-      !record(transition) ||
-      transition.version !== 1 ||
-      typeof transition.decision_hash !== "string" ||
-      typeof transition.before_project_state_hash !== "string" ||
-      typeof transition.after_project_state_hash !== "string" ||
-      typeof transition.before_run_state_hash !== "string" ||
-      typeof transition.after_run_state_hash !== "string" ||
-      !["PASS", "PATCH", "HUMAN_REQUIRED"].includes(String(transition.action))
-    )
-      throw new Error("Review transition artifact is malformed");
-    assertProjectState(transition.after_project_state);
-    assertRunState(transition.after_run_state);
+    assertReviewTransition(transition);
     if (transition.decision_hash !== sha256(canonicalizeValue(decision)))
       throw new Error("Review transition does not match immutable decision");
+    if (transition.action !== decision.action)
+      throw new Error("Review transition action does not match decision");
+    if (
+      transition.after_project_state_hash !==
+      hashProjectState(transition.after_project_state)
+    )
+      throw new Error("Review transition project hash is invalid");
+    if (transition.after_run_state_hash !== runHash(transition.after_run_state))
+      throw new Error("Review transition run hash is invalid");
     const projectNow = await loadProjectStateFromProject(projectRoot);
     const runNow = await loadRunState(runPathValue);
     const projectHash = hashProjectState(projectNow);

@@ -234,6 +234,7 @@ export function assertRunState(value: unknown): asserts value is RunState {
         "round",
         "handoff_path",
         "handoff_hash",
+        "handoff_content_hash",
         "project_state_hash",
         "checkpoint_hash",
         "gate_artifact_hash",
@@ -260,12 +261,14 @@ export function assertRunState(value: unknown): asserts value is RunState {
       if (!/^[0-9a-f]{64}$/.test(value.waiting_handoff.project_state_hash))
         fail("waiting_handoff.project_state_hash must be lowercase SHA-256");
       if (
+        value.waiting_handoff.handoff_content_hash !== undefined ||
         value.waiting_handoff.checkpoint_hash !== undefined ||
         value.waiting_handoff.gate_artifact_hash !== undefined
       )
         fail("checkpoint review fields are only valid for review handoffs");
     } else if (value.waiting_handoff.kind === "review") {
       for (const field of [
+        "handoff_content_hash",
         "project_state_hash",
         "checkpoint_hash",
         "gate_artifact_hash",
@@ -275,6 +278,7 @@ export function assertRunState(value: unknown): asserts value is RunState {
           fail(`waiting_handoff.${field} must be lowercase SHA-256`);
       }
     } else if (
+      value.waiting_handoff.handoff_content_hash !== undefined ||
       value.waiting_handoff.project_state_hash !== undefined ||
       value.waiting_handoff.checkpoint_hash !== undefined ||
       value.waiting_handoff.gate_artifact_hash !== undefined

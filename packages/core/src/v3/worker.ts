@@ -22,6 +22,7 @@ import {
 } from "./state.js";
 import { assertProjectState, assertRunState } from "./state-invariants.js";
 import { writeJsonAtomic, writeTextAtomic } from "./atomic-json.js";
+import { parseChiefReviewDecision } from "./review.js";
 
 export type V3WorkerConfig = {
   worker: {
@@ -152,7 +153,9 @@ async function readSelectDecision(
 
 async function readPreviousReviewDecision(
   root: string,
-  run: RunState
+  run: RunState,
+  project: ProjectState,
+  task: ProjectTask
 ): Promise<unknown> {
   if (run.round <= 1) return undefined;
   const path = artifact(
@@ -161,14 +164,39 @@ async function readPreviousReviewDecision(
     run.round - 1,
     "review_decision.json"
   );
+  let decision: ReturnType<typeof parseChiefReviewDecision>;
   try {
-    return JSON.parse(await readFile(path, "utf8"));
+    decision = parseChiefReviewDecision(
+      JSON.parse(await readFile(path, "utf8"))
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw new Error(`review_decision.json is malformed: ${path}`, {
       cause: error,
     });
   }
+  if (decision.action !== "PATCH")
+    throw new Error("Previous Review decision is not a PATCH continuation");
+  let checkpoint: Record<string, unknown>;
+  try {
+    checkpoint = JSON.parse(
+      await readFile(
+        artifact(root, run.run_id, run.round - 1, "checkpoint.json"),
+        "utf8"
+      )
+    ) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error("Previous Review PATCH checkpoint evidence is missing", {
+      cause: error,
+    });
+  }
+  if (
+    checkpoint.task_id !== task.id ||
+    project.current_task_id !== task.id ||
+    run.current_task_id !== task.id
+  )
+    throw new Error("Previous Review PATCH task continuity is invalid");
+  return decision;
 }
 
 export function buildWorkerPrompt(
@@ -314,7 +342,7 @@ export async function runWorkerPhase(options: {
   const decision = await readSelectDecision(root, run);
   const reviewDecision =
     decision === undefined
-      ? await readPreviousReviewDecision(root, run)
+      ? await readPreviousReviewDecision(root, run, project, task)
       : undefined;
   const prompt = buildWorkerPrompt(
     project,

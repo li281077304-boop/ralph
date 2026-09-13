@@ -75,6 +75,7 @@ export interface ReviewWaitingHandoff {
   round: number;
   handoff_path: string;
   handoff_hash: string;
+  handoff_content_hash: string;
   project_state_hash: string;
   checkpoint_hash: string;
   gate_artifact_hash: string;
