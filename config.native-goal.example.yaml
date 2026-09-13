@@ -1,0 +1,10 @@
+# Economical V3 worker configuration.
+# The External Chief remains the decision maker; Luna performs implementation.
+chief_mode: external
+
+worker:
+  agent: codex
+  mode: native_goal
+  model: gpt-5.6-luna
+
+# No max_total_tokens is set: omitted means no Ralph token-budget limit.

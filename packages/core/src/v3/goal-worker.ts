@@ -42,6 +42,14 @@ export interface GoalTransport {
   close(): Promise<void>;
 }
 
+type GoalLifecycle = "thread_started" | "goal_active" | "terminal";
+
+type GoalActivationEvidence = {
+  method: "thread/goal/set" | "thread/goal/get" | "thread/goal/updated";
+  status: "active";
+  observed_at: string;
+};
+
 export type GoalWorkerArtifact = {
   version: 1;
   run_id: string;
@@ -51,12 +59,9 @@ export type GoalWorkerArtifact = {
   objective_hash: string;
   started_at: string;
   updated_at: string;
+  lifecycle: GoalLifecycle;
   latest_goal_status: GoalStatus;
-  activation_evidence: {
-    method: "thread/goal/updated";
-    status: "active";
-    observed_at: string;
-  };
+  activation_evidence?: GoalActivationEvidence;
   goal?: GoalRecord;
 };
 
@@ -114,6 +119,80 @@ function now(): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function validateGoalBinding(
+  goal: GoalRecord,
+  threadId: string,
+  expectedObjectiveHash: string,
+  label: string
+): GoalRecord {
+  if (goal.threadId !== threadId)
+    throw new Error(`${label} thread identity mismatch`);
+  if (objectiveHash(goal.objective) !== expectedObjectiveHash)
+    throw new Error(`${label} objective identity mismatch`);
+  return goal;
+}
+
+function parseGoalArtifact(value: unknown): GoalWorkerArtifact {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("goal_worker.json is malformed");
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    typeof record.run_id !== "string" ||
+    typeof record.round !== "number" ||
+    typeof record.task_id !== "string" ||
+    typeof record.thread_id !== "string" ||
+    typeof record.objective_hash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(record.objective_hash) ||
+    typeof record.started_at !== "string" ||
+    typeof record.updated_at !== "string" ||
+    !isGoalStatus(record.latest_goal_status) ||
+    !["thread_started", "goal_active", "terminal"].includes(
+      record.lifecycle as string
+    )
+  )
+    throw new Error("goal_worker.json lifecycle or identity is malformed");
+  const activation = record.activation_evidence;
+  if (activation !== undefined) {
+    if (
+      !activation ||
+      typeof activation !== "object" ||
+      Array.isArray(activation)
+    )
+      throw new Error("goal_worker.json activation evidence is malformed");
+    const evidence = activation as Record<string, unknown>;
+    if (
+      !["thread/goal/set", "thread/goal/get", "thread/goal/updated"].includes(
+        evidence.method as string
+      ) ||
+      evidence.status !== "active" ||
+      typeof evidence.observed_at !== "string"
+    )
+      throw new Error("goal_worker.json activation evidence is malformed");
+  }
+  if (record.lifecycle === "thread_started" && activation !== undefined)
+    throw new Error("thread_started Goal artifact cannot claim activation");
+  if (record.lifecycle !== "thread_started" && activation === undefined)
+    throw new Error("active Goal artifact is missing activation evidence");
+  if (
+    record.lifecycle === "thread_started" &&
+    record.latest_goal_status !== "active"
+  )
+    throw new Error("thread_started Goal artifact has an invalid status");
+  if (
+    record.lifecycle === "goal_active" &&
+    record.latest_goal_status !== "active"
+  )
+    throw new Error("goal_active Goal artifact has an invalid status");
+  if (record.lifecycle === "terminal") {
+    if (record.latest_goal_status === "active")
+      throw new Error("terminal Goal artifact has an active status");
+    if (!record.goal) throw new Error("terminal Goal artifact is missing Goal");
+    requireGoal(record.goal, "goal_worker.json Goal");
+  }
+  return record as GoalWorkerArtifact;
 }
 
 /**
@@ -330,7 +409,7 @@ export async function runNativeGoalWorker(options: {
   const hash = objectiveHash(options.prompt);
   let existing: GoalWorkerArtifact | undefined;
   try {
-    existing = JSON.parse(await readFile(path, "utf8")) as GoalWorkerArtifact;
+    existing = parseGoalArtifact(JSON.parse(await readFile(path, "utf8")));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT")
       return {
@@ -364,24 +443,85 @@ export async function runNativeGoalWorker(options: {
     let threadId = existing?.thread_id;
     let goal: GoalRecord | null = null;
     let activationSeen = Boolean(existing?.activation_evidence);
+    let activationEvidence = existing?.activation_evidence;
     let text = "";
     if (threadId) {
       await transport.resumeThread(threadId);
       goal = await transport.getGoal(threadId);
-      if (!goal)
-        return {
-          text: "",
-          meta: {},
-          error: "Native Goal recovery found no persisted goal",
-        };
-      if (goal.status === "active") {
-        const waited = await transport.waitForGoal(
+      if (!goal) {
+        const wait = transport.waitForGoal(
           threadId,
           options.goalTimeoutMs ?? 86_400_000
         );
-        goal = waited.goal;
+        const set = validateGoalBinding(
+          await transport.setGoal(threadId, options.prompt),
+          threadId,
+          hash,
+          "thread/goal/set"
+        );
+        if (set.status !== "active")
+          throw new Error("thread/goal/set did not activate the expected Goal");
+        activationSeen = true;
+        activationEvidence = {
+          method: "thread/goal/set",
+          status: "active",
+          observed_at: now(),
+        };
+        await writeJsonAtomic(path, {
+          version: 1,
+          run_id: options.runId,
+          round: options.round,
+          task_id: options.taskId,
+          thread_id: threadId,
+          objective_hash: hash,
+          started_at: started,
+          updated_at: now(),
+          lifecycle: "goal_active",
+          latest_goal_status: "active",
+          activation_evidence: activationEvidence,
+        } satisfies GoalWorkerArtifact);
+        const waited = await wait;
+        goal = validateGoalBinding(
+          waited.goal,
+          threadId,
+          hash,
+          "thread/goal/updated"
+        );
         activationSeen ||= waited.activationSeen;
         text = waited.text;
+      } else {
+        goal = validateGoalBinding(goal, threadId, hash, "thread/goal/get");
+        if (!activationEvidence && goal.status === "active") {
+          if (!existing)
+            throw new Error("Native Goal recovery artifact is missing");
+          activationEvidence = {
+            method: "thread/goal/get",
+            status: "active",
+            observed_at: now(),
+          };
+          activationSeen = true;
+          await writeJsonAtomic(path, {
+            ...existing,
+            updated_at: now(),
+            lifecycle: "goal_active",
+            latest_goal_status: "active",
+            activation_evidence: activationEvidence,
+          } satisfies GoalWorkerArtifact);
+        }
+        if (goal.status === "active") {
+          const waited = await transport.waitForGoal(
+            threadId,
+            options.goalTimeoutMs ?? 86_400_000
+          );
+          goal = validateGoalBinding(
+            waited.goal,
+            threadId,
+            hash,
+            "thread/goal/updated"
+          );
+          activationSeen ||= waited.activationSeen;
+          text = waited.text;
+        }
       }
     } else {
       const startedThread = await transport.startThread({
@@ -402,16 +542,48 @@ export async function runNativeGoalWorker(options: {
         objective_hash: hash,
         started_at: started,
         updated_at: now(),
+        lifecycle: "thread_started",
         latest_goal_status: "active",
-      });
+      } satisfies GoalWorkerArtifact);
       const wait = transport.waitForGoal(
         threadId,
         options.goalTimeoutMs ?? 86_400_000
       );
-      await transport.setGoal(threadId, options.prompt);
+      const set = validateGoalBinding(
+        await transport.setGoal(threadId, options.prompt),
+        threadId,
+        hash,
+        "thread/goal/set"
+      );
+      if (set.status !== "active")
+        throw new Error("thread/goal/set did not activate the expected Goal");
+      activationSeen = true;
+      activationEvidence = {
+        method: "thread/goal/set",
+        status: "active",
+        observed_at: now(),
+      };
+      await writeJsonAtomic(path, {
+        version: 1,
+        run_id: options.runId,
+        round: options.round,
+        task_id: options.taskId,
+        thread_id: threadId,
+        objective_hash: hash,
+        started_at: started,
+        updated_at: now(),
+        lifecycle: "goal_active",
+        latest_goal_status: "active",
+        activation_evidence: activationEvidence,
+      } satisfies GoalWorkerArtifact);
       const waited = await wait;
-      goal = waited.goal;
-      activationSeen = waited.activationSeen;
+      goal = validateGoalBinding(
+        waited.goal,
+        threadId,
+        hash,
+        "thread/goal/updated"
+      );
+      activationSeen ||= waited.activationSeen;
       text = waited.text;
     }
     if (!goal || !isGoalStatus(goal.status))
@@ -435,8 +607,9 @@ export async function runNativeGoalWorker(options: {
       objective_hash: hash,
       started_at: started,
       updated_at: now(),
+      lifecycle: "terminal" as const,
       latest_goal_status: goal.status,
-      activation_evidence: existing?.activation_evidence ?? {
+      activation_evidence: activationEvidence ?? {
         method: "thread/goal/updated" as const,
         status: "active" as const,
         observed_at: now(),
