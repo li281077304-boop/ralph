@@ -275,6 +275,11 @@ test("External Chief failure preserves WAITING_FOR_CHIEF and resumes the same ha
   assert.equal(first.status, "WAITING_FOR_CHIEF");
   assert.equal(first.runState.phase, "WAITING_FOR_CHIEF");
   const commitsAfterFirst = git(f.root, ["rev-list", "--count", "HEAD"]);
+  const roundDir = join(getChiefRunDir(f.root, f.runId), "rounds", "001");
+  const gateBeforeRetry = await readFile(join(roundDir, "machine_gate.json"));
+  const checkpointBeforeRetry = await readFile(
+    join(roundDir, "checkpoint.json")
+  );
   const reviews = [];
   const second = await runV3UnattendedTask({
     projectRoot: f.root,
@@ -290,4 +295,12 @@ test("External Chief failure preserves WAITING_FOR_CHIEF and resumes the same ha
     1
   );
   assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), commitsAfterFirst);
+  assert.deepEqual(
+    await readFile(join(roundDir, "machine_gate.json")),
+    gateBeforeRetry
+  );
+  assert.deepEqual(
+    await readFile(join(roundDir, "checkpoint.json")),
+    checkpointBeforeRetry
+  );
 });
