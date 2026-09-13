@@ -1397,6 +1397,13 @@ async function externalPlanning(args: {
     args.state.reason = `GUI Bridge failed closed: ${error}`;
     args.state.status = "WAITING_FOR_CHIEF";
     args.persist();
+    args.card(
+      "未执行",
+      args.state.reason,
+      "",
+      "请检查 GUI Bridge 后重新 resume",
+      "等待外部总工规划"
+    );
     return { kind: "waiting" };
   }
   const input = loadExternalPlan(
