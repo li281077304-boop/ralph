@@ -134,3 +134,25 @@ export {
   type SelectHandoff,
   type SelectPreparation,
 } from "./v3/select.js";
+export {
+  buildWorkerPrompt,
+  runWorkerPhase,
+  type V3WorkerConfig,
+  type V3WorkerRunner,
+  type WorkerPhaseResult,
+} from "./v3/worker.js";
+export {
+  runMachineGatePhase,
+  type V3GateConfig,
+  type MachineGatePhaseResult,
+} from "./v3/machine-gate.js";
+export {
+  runCheckpointPhase,
+  type V3CheckpointConfig,
+  type CheckpointResult,
+} from "./v3/checkpoint.js";
+export {
+  runV3WorkSlice,
+  type V3WorkConfig,
+  type V3WorkResult,
+} from "./v3/work.js";

@@ -3,6 +3,7 @@ dist/
 *.tsbuildinfo
 .ralph-tmp/
 .ralph/chief-runs/
+.ralph/chief/
 .ghafk-prompt-*.md
 .pnpm-store/
 .worktrees/
