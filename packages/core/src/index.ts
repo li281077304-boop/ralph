@@ -71,6 +71,7 @@ export {
   type V3Phase,
   type WaitingHandoff,
   type SelectWaitingHandoff,
+  type ReviewWaitingHandoff,
   type FutureWaitingHandoff,
 } from "./v3/state.js";
 export { assertRunState, assertProjectState } from "./v3/state-invariants.js";
@@ -134,6 +135,19 @@ export {
   type SelectHandoff,
   type SelectPreparation,
 } from "./v3/select.js";
+export {
+  REVIEW_HANDOFF_KIND,
+  REVIEW_OPEN_MARKER,
+  REVIEW_CLOSE_MARKER,
+  parseChiefReviewDecision,
+  validateChiefReviewDecision,
+  prepareReviewHandoff,
+  applyReviewDecision,
+  verifyReviewCheckpoint,
+  type ChiefReviewDecision,
+  type ReviewHandoff,
+  type ReviewPreparation,
+} from "./v3/review.js";
 export {
   buildWorkerPrompt,
   runWorkerPhase,

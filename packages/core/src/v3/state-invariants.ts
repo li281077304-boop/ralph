@@ -235,6 +235,8 @@ export function assertRunState(value: unknown): asserts value is RunState {
         "handoff_path",
         "handoff_hash",
         "project_state_hash",
+        "checkpoint_hash",
+        "gate_artifact_hash",
         "created_at",
       ],
       "waiting_handoff"
@@ -257,7 +259,26 @@ export function assertRunState(value: unknown): asserts value is RunState {
       );
       if (!/^[0-9a-f]{64}$/.test(value.waiting_handoff.project_state_hash))
         fail("waiting_handoff.project_state_hash must be lowercase SHA-256");
-    } else if (value.waiting_handoff.project_state_hash !== undefined) {
+      if (
+        value.waiting_handoff.checkpoint_hash !== undefined ||
+        value.waiting_handoff.gate_artifact_hash !== undefined
+      )
+        fail("checkpoint review fields are only valid for review handoffs");
+    } else if (value.waiting_handoff.kind === "review") {
+      for (const field of [
+        "project_state_hash",
+        "checkpoint_hash",
+        "gate_artifact_hash",
+      ]) {
+        string(value.waiting_handoff[field], `waiting_handoff.${field}`);
+        if (!/^[0-9a-f]{64}$/.test(value.waiting_handoff[field]))
+          fail(`waiting_handoff.${field} must be lowercase SHA-256`);
+      }
+    } else if (
+      value.waiting_handoff.project_state_hash !== undefined ||
+      value.waiting_handoff.checkpoint_hash !== undefined ||
+      value.waiting_handoff.gate_artifact_hash !== undefined
+    ) {
       fail("project_state_hash is only valid for select handoffs");
     }
     iso(value.waiting_handoff.created_at, "waiting_handoff.created_at");

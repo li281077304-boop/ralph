@@ -150,6 +150,27 @@ async function readSelectDecision(
   }
 }
 
+async function readPreviousReviewDecision(
+  root: string,
+  run: RunState
+): Promise<unknown> {
+  if (run.round <= 1) return undefined;
+  const path = artifact(
+    root,
+    run.run_id,
+    run.round - 1,
+    "review_decision.json"
+  );
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(`review_decision.json is malformed: ${path}`, {
+      cause: error,
+    });
+  }
+}
+
 export function buildWorkerPrompt(
   project: ProjectState,
   run: RunState,
@@ -178,7 +199,7 @@ export function buildWorkerPrompt(
     `evidence:\n${task.evidence.map((item) => `- ${item}`).join("\n") || "- none"}`,
     `source: ${task.source}`,
     "",
-    "Accepted SELECT decision (evidence only):",
+    "Accepted Chief construction context (evidence only):",
     JSON.stringify(selectDecision ?? {}, null, 2),
     "",
     "When done, provide a concise summary of implementation and verification. Do not emit a control decision.",
@@ -291,7 +312,19 @@ export async function runWorkerPhase(options: {
     return { runState: failed, projectState: project };
   }
   const decision = await readSelectDecision(root, run);
-  const prompt = buildWorkerPrompt(project, run, task, decision);
+  const reviewDecision =
+    decision === undefined
+      ? await readPreviousReviewDecision(root, run)
+      : undefined;
+  const prompt = buildWorkerPrompt(
+    project,
+    run,
+    task,
+    decision ??
+      (reviewDecision
+        ? { continuation: "REVIEW_PATCH", review_decision: reviewDecision }
+        : undefined)
+  );
   await writeTextAtomic(join(round, "worker_prompt.md"), `${prompt}\n`);
   const runner =
     options.runAgent ?? defaultRunner(options.config, root, runDir);

@@ -4,6 +4,7 @@ dist/
 .ralph-tmp/
 .ralph/chief-runs/
 .ralph/chief/
+.ralph/chief-active-run.lock
 .ghafk-prompt-*.md
 .pnpm-store/
 .worktrees/

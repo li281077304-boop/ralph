@@ -62,14 +62,26 @@ export interface SelectWaitingHandoff {
   created_at: string;
 }
 export interface FutureWaitingHandoff {
-  kind: "review" | "final_review";
+  kind: "final_review";
   run_id: string;
   round: number;
   handoff_path: string;
   handoff_hash: string;
   created_at: string;
 }
-export type WaitingHandoff = SelectWaitingHandoff | FutureWaitingHandoff;
+export interface ReviewWaitingHandoff {
+  kind: "review";
+  run_id: string;
+  round: number;
+  handoff_path: string;
+  handoff_hash: string;
+  project_state_hash: string;
+  checkpoint_hash: string;
+  gate_artifact_hash: string;
+  created_at: string;
+}
+export type WaitingHandoff =
+  SelectWaitingHandoff | ReviewWaitingHandoff | FutureWaitingHandoff;
 
 export interface HeadEvidence {
   base?: string;
