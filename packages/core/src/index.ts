@@ -171,3 +171,4 @@ export {
   type V3WorkConfig,
   type V3WorkResult,
 } from "./v3/work.js";
+export { inspectV3Status, type V3Status } from "./v3/status.js";
