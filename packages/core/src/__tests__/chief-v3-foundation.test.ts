@@ -93,6 +93,21 @@ describe("Chief V3 durable foundation", () => {
     expect(() =>
       assertProjectState({ ...project(), current_task_id: "missing" })
     ).toThrow(/current_task_id/);
+    const withDuplicate = project();
+    withDuplicate.tasks.push({ ...withDuplicate.tasks[0], id: "t1" });
+    expect(() => assertProjectState(withDuplicate)).toThrow(
+      /duplicate task id/
+    );
+    const withUnknownDependency = project();
+    withUnknownDependency.tasks[0].dependencies = ["missing"];
+    expect(() => assertProjectState(withUnknownDependency)).toThrow(
+      /unknown task/
+    );
+    const withSelfDependency = project();
+    withSelfDependency.tasks[0].dependencies = ["t1"];
+    expect(() => assertProjectState(withSelfDependency)).toThrow(
+      /depends on itself/
+    );
     expect(() => parseProjectState(run())).toThrow(/Invalid durable state/);
   });
 
@@ -158,6 +173,20 @@ describe("Chief V3 durable foundation", () => {
         run_state_path: "RUN_STATE.json",
       })
     ).rejects.toMatchObject({ inspection: { kind: "live_different_run" } });
+    const otherRunDir = join(dir, ".ralph", "chief-runs", "run-2");
+    await expect(
+      acquireActiveWriterLock(dir, {
+        run_id: "run-2",
+        run_state_path: `${otherRunDir}/RUN_STATE.json`,
+      })
+    ).rejects.toMatchObject({ inspection: { kind: "live_different_run" } });
+    const refreshed = await (
+      await import("../index.js")
+    ).refreshActiveWriterLock(dir, first);
+    expect(refreshed.updated_at).not.toBe(first.updated_at);
+    expect(
+      await releaseActiveWriterLock(dir, { ...first, run_id: "other" })
+    ).toBe(false);
     expect(await releaseActiveWriterLock(dir, first)).toBe(true);
 
     await writeJsonAtomic(activeWriterLockPath(dir), {

@@ -35,8 +35,8 @@ export class ActiveWriterLockError extends Error {
   }
 }
 
-function lockPath(runDir: string): string {
-  return join(runDir, "RUN_STATE.lock");
+function lockPath(projectRoot: string): string {
+  return join(projectRoot, ".ralph", "chief-active-run.lock");
 }
 async function processIsAlive(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -103,37 +103,40 @@ export async function inspectActiveWriterLock(
 }
 
 export async function acquireActiveWriterLock(
-  runDir: string,
+  projectRoot: string,
   metadata: Pick<ActiveWriterLock, "run_id" | "run_state_path">
 ): Promise<ActiveWriterLock> {
-  await mkdir(dirname(lockPath(runDir)), { recursive: true });
+  await mkdir(dirname(lockPath(projectRoot)), { recursive: true });
   const now = new Date().toISOString();
   const lock: ActiveWriterLock = {
     version: 1,
     ...metadata,
     pid: process.pid,
     hostname: hostname(),
-    cwd: process.cwd(),
+    cwd: projectRoot,
     started_at: now,
     updated_at: now,
   };
   try {
-    const handle = await open(lockPath(runDir), "wx");
+    const handle = await open(lockPath(projectRoot), "wx");
     await handle.writeFile(`${JSON.stringify(lock, null, 2)}\n`, "utf8");
     await handle.close();
     return lock;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const inspection = await inspectActiveWriterLock(runDir, metadata.run_id);
+    const inspection = await inspectActiveWriterLock(
+      projectRoot,
+      metadata.run_id
+    );
     throw new ActiveWriterLockError(inspection);
   }
 }
 
 export async function refreshActiveWriterLock(
-  runDir: string,
+  projectRoot: string,
   owner: Pick<ActiveWriterLock, "run_id" | "pid" | "hostname">
 ): Promise<ActiveWriterLock> {
-  const inspection = await inspectActiveWriterLock(runDir, owner.run_id);
+  const inspection = await inspectActiveWriterLock(projectRoot, owner.run_id);
   if (
     !inspection.lock ||
     inspection.kind !== "live_same_run" ||
@@ -142,15 +145,15 @@ export async function refreshActiveWriterLock(
   )
     throw new ActiveWriterLockError(inspection);
   const next = { ...inspection.lock, updated_at: new Date().toISOString() };
-  await writeJsonAtomic(lockPath(runDir), next);
+  await writeJsonAtomic(lockPath(projectRoot), next);
   return next;
 }
 
 export async function releaseActiveWriterLock(
-  runDir: string,
+  projectRoot: string,
   owner: Pick<ActiveWriterLock, "run_id" | "pid" | "hostname">
 ): Promise<boolean> {
-  const inspection = await inspectActiveWriterLock(runDir, owner.run_id);
+  const inspection = await inspectActiveWriterLock(projectRoot, owner.run_id);
   if (
     !inspection.lock ||
     inspection.lock.run_id !== owner.run_id ||
@@ -158,24 +161,24 @@ export async function releaseActiveWriterLock(
     inspection.lock.hostname !== owner.hostname
   )
     return false;
-  await rm(lockPath(runDir), { force: true });
+  await rm(lockPath(projectRoot), { force: true });
   return true;
 }
 
 export async function clearStaleActiveWriterLock(
-  runDir: string,
+  projectRoot: string,
   requestedRunId?: string
 ): Promise<boolean> {
-  const inspection = await inspectActiveWriterLock(runDir, requestedRunId);
+  const inspection = await inspectActiveWriterLock(projectRoot, requestedRunId);
   if (
     inspection.kind !== "stale_same_host" &&
     inspection.kind !== "stale_different_run"
   )
     return false;
-  await rm(lockPath(runDir), { force: true });
+  await rm(lockPath(projectRoot), { force: true });
   return true;
 }
 
-export function activeWriterLockPath(runDir: string): string {
-  return lockPath(runDir);
+export function activeWriterLockPath(projectRoot: string): string {
+  return lockPath(projectRoot);
 }

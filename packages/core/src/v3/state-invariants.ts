@@ -138,7 +138,18 @@ export function assertProjectState(
   nullableString(value.current_task_id, "current_task_id");
   if (!Array.isArray(value.tasks)) fail("tasks must be an array");
   value.tasks.forEach(assertTask);
-  const ids = new Set(value.tasks.map((task) => task.id));
+  const ids = new Set<string>();
+  for (const task of value.tasks) {
+    if (ids.has(task.id)) fail(`duplicate task id: ${task.id}`);
+    ids.add(task.id);
+  }
+  for (const task of value.tasks) {
+    for (const dependency of task.dependencies) {
+      if (dependency === task.id) fail(`task ${task.id} depends on itself`);
+      if (!ids.has(dependency))
+        fail(`task ${task.id} depends on unknown task: ${dependency}`);
+    }
+  }
   if (value.current_task_id !== null && !ids.has(value.current_task_id))
     fail("current_task_id is not present in tasks");
   iso(value.created_at, "created_at");
