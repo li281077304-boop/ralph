@@ -15,6 +15,7 @@ export type V3GateConfig = {
   commands?: string[];
   timeout_seconds?: number;
   gate_allowed_paths?: string[];
+  required_clean_patterns?: string[];
 };
 
 export type MachineGatePhaseResult = {
@@ -41,6 +42,20 @@ function patternMatches(path: string, patterns: string[]): boolean {
       .map((part) => part.replace(/[|\\{}()[\]^$+?.]/g, "\\$&"))
       .join(".*");
     return new RegExp(`^(?:${escaped})(?:/|$)`).test(path);
+  });
+}
+function requiredCleanMatches(path: string, patterns: string[]): boolean {
+  return patterns.some((raw) => {
+    const pattern = raw.replaceAll("\\", "/").replace(/\/$/, "");
+    if (!pattern) return false;
+    const escaped = pattern
+      .split("*")
+      .map((part) => part.replace(/[|\\{}()[\]^$+?.]/g, "\\$&"))
+      .join(".*");
+    return (
+      new RegExp(`^(?:${escaped})(?:/|$)`).test(path) ||
+      new RegExp(`(?:^|/)${escaped}$`).test(path)
+    );
   });
 }
 function failState(state: RunState, reason: string): RunState {
@@ -121,6 +136,17 @@ export async function runMachineGatePhase(options: {
     )
       throw new Error("machine gate recovery workspace fingerprint mismatch");
     const gate = gateFromArtifact(existing);
+    const beforeBranch = existing.before_branch;
+    const afterBranch = existing.after_branch;
+    if (
+      typeof beforeBranch !== "string" ||
+      typeof afterBranch !== "string" ||
+      beforeBranch !== afterBranch ||
+      afterBranch !== before.branch ||
+      workerEvidence.after_branch !== afterBranch
+    ) {
+      throw new Error("machine gate recovery branch evidence mismatch");
+    }
     const next: RunState = {
       ...state,
       phase: "CHECKPOINT",
@@ -141,9 +167,18 @@ export async function runMachineGatePhase(options: {
   const after = guard.snapshot();
   const trackedChanges = guard.trackedChangedPaths(before, after);
   const allowed = options.config.gate_allowed_paths ?? [];
+  const requiredClean = options.config.required_clean_patterns ?? [];
   const disallowed = trackedChanges.filter(
     (path) => !patternMatches(path, allowed)
   );
+  const workerChanged = Array.isArray(workerEvidence.changed_paths)
+    ? (workerEvidence.changed_paths as string[])
+    : [];
+  const requiredCleanViolations = [
+    ...new Set([...workerChanged, ...trackedChanges]),
+  ]
+    .filter((path) => requiredCleanMatches(path, requiredClean))
+    .map((path) => `required_clean:${path}`);
   const artifactValue = {
     version: 1,
     ...gate,
@@ -152,11 +187,14 @@ export async function runMachineGatePhase(options: {
       : gate.trackedChanges,
     before_workspace_fingerprint: workspaceFingerprint(before),
     after_workspace_fingerprint: workspaceFingerprint(after),
+    before_branch: before.branch,
+    after_branch: after.branch,
     created_at: new Date().toISOString(),
   };
   await writeJsonAtomic(outputPath, artifactValue);
   if (after.head !== before.head) disallowed.push("HEAD");
   if (after.branch !== before.branch) disallowed.push("branch");
+  disallowed.push(...requiredCleanViolations);
   if (disallowed.length) {
     const failed = failState(
       state,

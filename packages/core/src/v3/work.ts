@@ -18,6 +18,7 @@ export type V3WorkConfig = V3WorkerConfig & {
   commands?: string[];
   timeout_seconds?: number;
   gate_allowed_paths?: string[];
+  required_clean_patterns?: string[];
   remote?: string;
 };
 

@@ -33,6 +33,7 @@ export async function main(argv = process.argv.slice(2)) {
       commands: config.commands,
       timeout_seconds: config.timeout_seconds,
       gate_allowed_paths: config.gate_allowed_paths,
+      required_clean_patterns: config.required_clean_patterns,
       forbidden_paths: config.forbidden_paths,
       protected_paths: config.protected_paths,
       max_diff_bytes: config.max_diff_bytes,

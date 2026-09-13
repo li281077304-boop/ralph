@@ -7,6 +7,7 @@ import { getChiefRunDir, getRoundDir } from "./rounds.js";
 import { loadRunState, saveRunState, type RunState } from "./state.js";
 import { writeJsonAtomic, writeJsonImmutable } from "./atomic-json.js";
 import type { MachineGateResult } from "../machine-gate.js";
+import { GitGuard, workspaceFingerprint } from "../git-guard.js";
 
 export type V3CheckpointConfig = {
   remote?: string;
@@ -19,6 +20,9 @@ export type CheckpointResult = {
 
 function git(root: string, args: string[]): string {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+}
+function gitBytes(root: string, args: string[]): Buffer {
+  return execFileSync("git", args, { cwd: root }) as Buffer;
 }
 function maybeGit(root: string, args: string[]): string {
   try {
@@ -38,8 +42,8 @@ function roundPath(
 ): string {
   return join(getRoundDir(getChiefRunDir(root, runId), round), name);
 }
-function hash(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+function hash(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 async function readOptional(
   path: string
@@ -74,9 +78,17 @@ function changedPaths(root: string): string[] {
   }
   return [...result].sort();
 }
-function diffHash(root: string): string {
+function workingTreeDiffHash(root: string): string {
   const diff = maybeGit(root, ["diff", "--binary", "HEAD"]);
   return hash(`${diff}\n${changedPaths(root).join("\n")}`);
+}
+function committedDiffHash(root: string, base: string, head: string): string {
+  return hash(gitBytes(root, ["diff", "--binary", base, head]));
+}
+function cleanWorktree(root: string): boolean {
+  return (
+    maybeGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]) === ""
+  );
 }
 function commitMessage(taskId: string, round: number, runId: string): string {
   return [
@@ -158,6 +170,30 @@ export async function runCheckpointPhase(options: {
     state.round,
     "checkpoint.json"
   );
+  const gatePath = roundPath(
+    root,
+    options.runId,
+    state.round,
+    "machine_gate.json"
+  );
+  const gateBytes = await readFile(gatePath);
+  const gateArtifactHash = hash(gateBytes);
+  const gateArtifact = JSON.parse(gateBytes.toString("utf8")) as Record<
+    string,
+    unknown
+  >;
+  const gatedWorkspaceFingerprint = gateArtifact.after_workspace_fingerprint;
+  const gateBeforeBranch = gateArtifact.before_branch;
+  const gateAfterBranch = gateArtifact.after_branch;
+  if (
+    !gatedWorkspaceFingerprint ||
+    typeof gateBeforeBranch !== "string" ||
+    typeof gateAfterBranch !== "string" ||
+    gateBeforeBranch !== gateAfterBranch ||
+    gateAfterBranch !== branch
+  ) {
+    throw new Error("machine gate branch/workspace evidence is incomplete");
+  }
   let intent = await readOptional(intentPath);
   const currentHead = git(root, ["rev-parse", "HEAD"]);
   if (!intent) {
@@ -176,8 +212,14 @@ export async function runCheckpointPhase(options: {
       branch,
       remote,
       changed_paths: changedPaths(root),
-      diff_hash: diffHash(root),
-      gate_passed: options.gate?.passed ?? false,
+      diff_hash: workingTreeDiffHash(root),
+      gate_passed:
+        options.gate?.passed ??
+        (typeof gateArtifact.passed === "boolean"
+          ? gateArtifact.passed
+          : false),
+      gated_workspace_fingerprint: gatedWorkspaceFingerprint,
+      gate_artifact_hash: gateArtifactHash,
       commit_subject: `ralph(v3): ${taskId} round ${state.round}`,
       created_at: new Date().toISOString(),
     };
@@ -187,14 +229,27 @@ export async function runCheckpointPhase(options: {
       intent.run_id !== options.runId ||
       intent.round !== state.round ||
       intent.branch !== branch ||
-      intent.remote !== remote
+      intent.remote !== remote ||
+      intent.gate_artifact_hash !== gateArtifactHash ||
+      JSON.stringify(intent.gated_workspace_fingerprint) !==
+        JSON.stringify(gatedWorkspaceFingerprint)
     )
       throw new Error("checkpoint intent does not match current run");
   }
   const expectedBase = String(intent.base_sha);
   let head = git(root, ["rev-parse", "HEAD"]);
   if (head === expectedBase) {
-    if (diffHash(root) !== String(intent.diff_hash))
+    const currentWorkspace = workspaceFingerprint(
+      new GitGuard(root).snapshot()
+    );
+    if (
+      JSON.stringify(currentWorkspace) !==
+      JSON.stringify(intent.gated_workspace_fingerprint)
+    )
+      throw new Error(
+        "current workspace does not match the completed Machine Gate"
+      );
+    if (workingTreeDiffHash(root) !== String(intent.diff_hash))
       throw new Error("working tree no longer matches the checkpoint intent");
     git(root, ["add", "-A"]);
     const paths = changedPaths(root);
@@ -211,9 +266,13 @@ export async function runCheckpointPhase(options: {
       "HEAD is unrelated to the checkpoint intent; refusing to reset or create a duplicate"
     );
   }
-  const expectedDiffHash = String(intent.diff_hash);
   if (head === expectedBase)
     throw new Error("checkpoint commit was not created");
+  if (branchName(root) !== String(intent.branch))
+    throw new Error("current branch no longer matches the gated branch");
+  if (!cleanWorktree(root))
+    throw new Error("checkpoint worktree is not clean before push");
+  const expectedDiffHash = committedDiffHash(root, expectedBase, head);
   pushAndVerify(root, remote, branch, head);
   const checkpoint = {
     version: 1,
@@ -226,6 +285,8 @@ export async function runCheckpointPhase(options: {
     remote,
     remote_url: remoteUrl(root, remote),
     diff_hash: expectedDiffHash,
+    gated_workspace_fingerprint: intent.gated_workspace_fingerprint,
+    gate_artifact_hash: intent.gate_artifact_hash,
     changed_paths: intent.changed_paths,
     gate_passed: intent.gate_passed,
     pushed: true,

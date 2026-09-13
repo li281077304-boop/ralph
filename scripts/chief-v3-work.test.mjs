@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,10 +81,59 @@ function config(overrides = {}) {
     commands: [],
     timeout_seconds: 10,
     gate_allowed_paths: [],
+    required_clean_patterns: [],
     forbidden_paths: [],
     protected_paths: [],
     ...overrides,
   };
+}
+
+function changedPaths(root) {
+  const paths = new Set(
+    git(root, ["diff", "--name-only", "HEAD"]).split(/\r?\n/).filter(Boolean)
+  );
+  for (const line of git(root, [
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all",
+  ])
+    .split(/\r?\n/)
+    .filter(Boolean)) {
+    const path = line.slice(3).trim();
+    if (path && !path.includes(" -> ")) paths.add(path);
+  }
+  return [...paths].sort();
+}
+
+function workingTreeDiffHash(root) {
+  return createHash("sha256")
+    .update(
+      `${git(root, ["diff", "--binary", "HEAD"])}\n${changedPaths(root).join("\n")}`
+    )
+    .digest("hex");
+}
+
+async function prepareCheckpoint(f, overrides = {}) {
+  const workerConfig = config(overrides);
+  await runWorkerPhase({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+    runAgent:
+      overrides.runAgent ??
+      (async () => {
+        await writeFile(join(f.root, "app.txt"), "worker\n");
+        return { text: "done", meta: {} };
+      }),
+  });
+  await runMachineGatePhase({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+    runGate:
+      overrides.runGate ?? (async () => ({ passed: true, commands: [] })),
+  });
+  return workerConfig;
 }
 
 test("V3 work runs fresh Worker, normal gate, and canonical pushed checkpoint", async () => {
@@ -129,6 +178,14 @@ test("V3 work runs fresh Worker, normal gate, and canonical pushed checkpoint", 
     ),
     /pushed/
   );
+  const checkpoint = JSON.parse(
+    await readFile(
+      join(getChiefRunDir(f.root, f.runId), "rounds/001/checkpoint.json"),
+      "utf8"
+    )
+  );
+  assert.match(checkpoint.gate_artifact_hash, /^[0-9a-f]{64}$/);
+  assert.match(checkpoint.diff_hash, /^[0-9a-f]{64}$/);
   assert.equal((await inspectActiveWriterLock(f.root, f.runId)).kind, "none");
 });
 
@@ -286,6 +343,9 @@ test("local checkpoint commit created before a crash is reused and pushed", asyn
   );
   const base = git(f.root, ["rev-parse", "HEAD"]);
   const round = join(runDir, "rounds/001");
+  const gatePath = join(round, "machine_gate.json");
+  const gateBytes = await readFile(gatePath);
+  const gateArtifact = JSON.parse(gateBytes);
   const intent = {
     version: 1,
     run_id: f.runId,
@@ -295,8 +355,10 @@ test("local checkpoint commit created before a crash is reused and pushed", asyn
     branch: "feature/test",
     remote: "origin",
     changed_paths: [],
-    diff_hash: createHash("sha256").update("\n").digest("hex"),
+    diff_hash: workingTreeDiffHash(f.root),
     gate_passed: true,
+    gated_workspace_fingerprint: gateArtifact.after_workspace_fingerprint,
+    gate_artifact_hash: createHash("sha256").update(gateBytes).digest("hex"),
     commit_subject: "ralph(v3): task-1 round 1",
     created_at: now,
   };
@@ -351,4 +413,167 @@ test("completed Worker evidence resumes from WORKER without rerunning the Worker
     },
   });
   assert.equal(result.runState.phase, "CHIEF_REVIEW");
+});
+
+test("untracked content mutation after checkpoint intent fails closed", async () => {
+  const f = await fixture();
+  const workerConfig = await prepareCheckpoint(f, {
+    runAgent: async () => {
+      await writeFile(join(f.root, "app.txt"), "worker\n");
+      await writeFile(join(f.root, "generated.txt"), "one\n");
+      return { text: "done", meta: {} };
+    },
+  });
+  const round = join(getChiefRunDir(f.root, f.runId), "rounds/001");
+  const gatePath = join(round, "machine_gate.json");
+  const gateBytes = await readFile(gatePath);
+  const gateArtifact = JSON.parse(gateBytes);
+  const base = git(f.root, ["rev-parse", "HEAD"]);
+  await writeFile(
+    join(round, "checkpoint_intent.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        run_id: f.runId,
+        round: 1,
+        task_id: "task-1",
+        base_sha: base,
+        branch: "feature/test",
+        remote: "origin",
+        changed_paths: ["app.txt", "generated.txt"],
+        diff_hash: workingTreeDiffHash(f.root),
+        gate_passed: true,
+        gated_workspace_fingerprint: gateArtifact.after_workspace_fingerprint,
+        gate_artifact_hash: createHash("sha256")
+          .update(gateBytes)
+          .digest("hex"),
+        commit_subject: "ralph(v3): task-1 round 1",
+        created_at: now,
+      },
+      null,
+      2
+    )}\n`
+  );
+  await writeFile(join(f.root, "generated.txt"), "two\n");
+  await assert.rejects(
+    runV3WorkSlice({
+      projectRoot: f.root,
+      runId: f.runId,
+      config: workerConfig,
+    }),
+    /workspace/
+  );
+  assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), "1");
+  assert.equal((await inspectActiveWriterLock(f.root, f.runId)).kind, "none");
+});
+
+test("branch switch after Gate fails closed before checkpoint", async () => {
+  const f = await fixture();
+  const workerConfig = await prepareCheckpoint(f);
+  git(f.root, ["checkout", "-q", "-b", "feature/other"]);
+  await assert.rejects(
+    runV3WorkSlice({
+      projectRoot: f.root,
+      runId: f.runId,
+      config: workerConfig,
+    }),
+    /branch/
+  );
+  assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), "1");
+  assert.equal((await inspectActiveWriterLock(f.root, f.runId)).kind, "none");
+});
+
+test("required_clean_patterns violation blocks checkpoint", async () => {
+  const f = await fixture();
+  const result = await runV3WorkSlice({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: config({ required_clean_patterns: ["app.txt"] }),
+    runAgent: async () => {
+      await writeFile(join(f.root, "app.txt"), "worker\n");
+      return { text: "done", meta: {} };
+    },
+  });
+  assert.equal(result.runState.phase, "FAILED");
+  assert.match(result.runState.failure_reason ?? "", /required_clean/);
+  assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), "1");
+});
+
+test("non-fast-forward remote rejection never force pushes", async () => {
+  const f = await fixture();
+  const workerConfig = await prepareCheckpoint(f);
+  const divergent = await mkdtemp(join(tmpdir(), "ralph-v3-divergent-"));
+  git(divergent, ["clone", "-q", "--branch", "feature/test", f.bare, "."]);
+  git(divergent, ["config", "user.email", "other@example.com"]);
+  git(divergent, ["config", "user.name", "Other"]);
+  await writeFile(join(divergent, "remote.txt"), "remote\n");
+  git(divergent, ["add", "."]);
+  git(divergent, ["commit", "-qm", "remote divergence"]);
+  git(divergent, ["push", "-q", "origin", "feature/test"]);
+  const remoteBefore = git(f.root, [
+    "ls-remote",
+    "--heads",
+    "origin",
+    "feature/test",
+  ]).split(/\s+/)[0];
+  await assert.rejects(
+    runV3WorkSlice({
+      projectRoot: f.root,
+      runId: f.runId,
+      config: workerConfig,
+    }),
+    /push|rejected|remote/
+  );
+  assert.equal(
+    git(f.root, ["ls-remote", "--heads", "origin", "feature/test"]).split(
+      /\s+/
+    )[0],
+    remoteBefore
+  );
+  assert.equal((await inspectActiveWriterLock(f.root, f.runId)).kind, "none");
+});
+
+test("push failure releases the project writer lock", async () => {
+  const f = await fixture();
+  const workerConfig = await prepareCheckpoint(f);
+  git(f.root, ["remote", "set-url", "origin", join(f.root, "missing-remote")]);
+  await assert.rejects(
+    runV3WorkSlice({
+      projectRoot: f.root,
+      runId: f.runId,
+      config: workerConfig,
+    }),
+    /push|remote|does not exist/
+  );
+  assert.equal((await inspectActiveWriterLock(f.root, f.runId)).kind, "none");
+});
+
+test("post-commit dirty worktree blocks push", async () => {
+  const f = await fixture();
+  const workerConfig = await prepareCheckpoint(f);
+  const hook = join(f.root, ".git", "hooks", "post-commit");
+  await writeFile(hook, "#!/bin/sh\nprintf dirty > hook-dirty.txt\n");
+  await chmod(hook, 0o755);
+  const remoteBefore = git(f.root, [
+    "ls-remote",
+    "--heads",
+    "origin",
+    "feature/test",
+  ]).split(/\s+/)[0];
+  await assert.rejects(
+    runV3WorkSlice({
+      projectRoot: f.root,
+      runId: f.runId,
+      config: workerConfig,
+    }),
+    /worktree is not clean/
+  );
+  assert.notEqual(git(f.root, ["rev-parse", "HEAD"]), remoteBefore);
+  assert.equal(
+    git(f.root, ["ls-remote", "--heads", "origin", "feature/test"]).split(
+      /\s+/
+    )[0],
+    remoteBefore
+  );
+  assert.equal((await inspectActiveWriterLock(f.root, f.runId)).kind, "none");
 });
