@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   getChiefRunDir,
+  buildWorkerPrompt,
+  loadProjectStateFromProject,
+  loadRunState,
   runNativeGoalWorker,
   runWorkerPhase,
   saveProjectStateToProject,
@@ -133,6 +137,41 @@ function config() {
     max_diff_bytes: 100_000,
     max_changed_paths: 10,
   };
+}
+
+async function seedThreadStartedArtifact(
+  f,
+  prompt,
+  threadId = "thread-test-1"
+) {
+  const path = join(
+    getChiefRunDir(f.root, f.runId),
+    "rounds/001/goal_worker.json"
+  );
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      run_id: f.runId,
+      round: 1,
+      task_id: "task-1",
+      thread_id: threadId,
+      objective_hash: createHash("sha256").update(prompt, "utf8").digest("hex"),
+      started_at: NOW,
+      updated_at: NOW,
+      lifecycle: "thread_started",
+      latest_goal_status: "active",
+    })
+  );
+}
+
+async function phasePrompt(f) {
+  const project = await loadProjectStateFromProject(f.root);
+  const run = await loadRunState(
+    join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json")
+  );
+  return buildWorkerPrompt(project, run, project.tasks[0]);
 }
 
 test("complete native Goal reaches MACHINE_GATE with activation evidence", async () => {
@@ -332,6 +371,64 @@ test("crash while Goal is active resumes the same Goal without a new activation"
     1
   );
 });
+
+test("terminal recovery accepts a matching Goal after activation evidence was not persisted", async () => {
+  const f = await fixture();
+  const prompt = "terminal recovery objective";
+  await seedThreadStartedArtifact(f, prompt);
+  const transport = new FakeGoalTransport(f.root, "complete");
+  transport.persistedObjective = prompt;
+  const result = await runNativeGoalWorker({
+    projectRoot: f.root,
+    runId: f.runId,
+    round: 1,
+    taskId: "task-1",
+    prompt,
+    transport,
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(
+    transport.calls.filter(([method]) => method === "thread/start").length,
+    0
+  );
+  assert.equal(
+    transport.calls.filter(([method]) => method === "thread/goal/set").length,
+    0
+  );
+  const artifact = JSON.parse(
+    await readFile(
+      join(getChiefRunDir(f.root, f.runId), "rounds/001/goal_worker.json"),
+      "utf8"
+    )
+  );
+  assert.equal(artifact.lifecycle, "terminal");
+  assert.equal(artifact.recovery_evidence.method, "thread/goal/get");
+  assert.equal(artifact.recovery_evidence.status, "complete");
+});
+
+for (const status of ["blocked", "usageLimited", "budgetLimited"]) {
+  test(`terminal ${status} recovery preserves the existing mapping`, async () => {
+    const f = await fixture();
+    const prompt = await phasePrompt(f);
+    await seedThreadStartedArtifact(f, prompt);
+    const transport = new FakeGoalTransport(f.root, status);
+    transport.persistedObjective = prompt;
+    const result = await runWorkerPhase({
+      projectRoot: f.root,
+      runId: f.runId,
+      config: config(),
+      goalTransport: transport,
+    });
+    assert.equal(
+      result.runState.phase,
+      status === "blocked" ? "HUMAN_REQUIRED" : "FAILED"
+    );
+    assert.equal(
+      transport.calls.filter(([method]) => method === "thread/goal/set").length,
+      0
+    );
+  });
+}
 
 test("objective mismatch cannot recover an existing Goal", async () => {
   const f = await fixture();

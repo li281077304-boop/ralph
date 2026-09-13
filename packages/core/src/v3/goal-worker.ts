@@ -50,6 +50,12 @@ type GoalActivationEvidence = {
   observed_at: string;
 };
 
+type GoalRecoveryEvidence = {
+  method: "thread/goal/get";
+  status: Exclude<GoalStatus, "active">;
+  observed_at: string;
+};
+
 export type GoalWorkerArtifact = {
   version: 1;
   run_id: string;
@@ -62,6 +68,7 @@ export type GoalWorkerArtifact = {
   lifecycle: GoalLifecycle;
   latest_goal_status: GoalStatus;
   activation_evidence?: GoalActivationEvidence;
+  recovery_evidence?: GoalRecoveryEvidence;
   goal?: GoalRecord;
 };
 
@@ -172,9 +179,29 @@ function parseGoalArtifact(value: unknown): GoalWorkerArtifact {
     )
       throw new Error("goal_worker.json activation evidence is malformed");
   }
+  const recovery = record.recovery_evidence;
+  if (recovery !== undefined) {
+    if (!recovery || typeof recovery !== "object" || Array.isArray(recovery))
+      throw new Error("goal_worker.json recovery evidence is malformed");
+    const evidence = recovery as Record<string, unknown>;
+    if (
+      evidence.method !== "thread/goal/get" ||
+      !isGoalStatus(evidence.status) ||
+      evidence.status === "active" ||
+      typeof evidence.observed_at !== "string"
+    )
+      throw new Error("goal_worker.json recovery evidence is malformed");
+  }
+  const parsedRecovery = recovery as GoalRecoveryEvidence | undefined;
   if (record.lifecycle === "thread_started" && activation !== undefined)
     throw new Error("thread_started Goal artifact cannot claim activation");
-  if (record.lifecycle !== "thread_started" && activation === undefined)
+  if (record.lifecycle === "thread_started" && recovery !== undefined)
+    throw new Error("thread_started Goal artifact cannot claim recovery");
+  if (
+    record.lifecycle !== "thread_started" &&
+    activation === undefined &&
+    recovery === undefined
+  )
     throw new Error("active Goal artifact is missing activation evidence");
   if (
     record.lifecycle === "thread_started" &&
@@ -190,7 +217,13 @@ function parseGoalArtifact(value: unknown): GoalWorkerArtifact {
     if (record.latest_goal_status === "active")
       throw new Error("terminal Goal artifact has an active status");
     if (!record.goal) throw new Error("terminal Goal artifact is missing Goal");
-    requireGoal(record.goal, "goal_worker.json Goal");
+    const storedGoal = requireGoal(record.goal, "goal_worker.json Goal");
+    if (
+      parsedRecovery &&
+      (parsedRecovery.status !== record.latest_goal_status ||
+        parsedRecovery.status !== storedGoal.status)
+    )
+      throw new Error("goal_worker.json recovery status does not match Goal");
   }
   return record as GoalWorkerArtifact;
 }
@@ -442,8 +475,11 @@ export async function runNativeGoalWorker(options: {
     await transport.initialize();
     let threadId = existing?.thread_id;
     let goal: GoalRecord | null = null;
-    let activationSeen = Boolean(existing?.activation_evidence);
+    let activationSeen = Boolean(
+      existing?.activation_evidence || existing?.recovery_evidence
+    );
     let activationEvidence = existing?.activation_evidence;
+    let recoveryEvidence = existing?.recovery_evidence;
     let text = "";
     if (threadId) {
       await transport.resumeThread(threadId);
@@ -521,6 +557,24 @@ export async function runNativeGoalWorker(options: {
           );
           activationSeen ||= waited.activationSeen;
           text = waited.text;
+        } else if (
+          existing?.lifecycle === "thread_started" &&
+          !recoveryEvidence
+        ) {
+          recoveryEvidence = {
+            method: "thread/goal/get",
+            status: goal.status,
+            observed_at: now(),
+          };
+          activationSeen = true;
+          await writeJsonAtomic(path, {
+            ...existing,
+            updated_at: now(),
+            lifecycle: "terminal",
+            latest_goal_status: goal.status,
+            recovery_evidence: recoveryEvidence,
+            goal,
+          } satisfies GoalWorkerArtifact);
         }
       }
     } else {
@@ -609,11 +663,18 @@ export async function runNativeGoalWorker(options: {
       updated_at: now(),
       lifecycle: "terminal" as const,
       latest_goal_status: goal.status,
-      activation_evidence: activationEvidence ?? {
-        method: "thread/goal/updated" as const,
-        status: "active" as const,
-        observed_at: now(),
-      },
+      ...(activationEvidence
+        ? { activation_evidence: activationEvidence }
+        : !recoveryEvidence
+          ? {
+              activation_evidence: {
+                method: "thread/goal/updated" as const,
+                status: "active" as const,
+                observed_at: now(),
+              },
+            }
+          : {}),
+      ...(recoveryEvidence ? { recovery_evidence: recoveryEvidence } : {}),
       goal,
     } satisfies GoalWorkerArtifact;
     await writeJsonAtomic(path, evidence);
