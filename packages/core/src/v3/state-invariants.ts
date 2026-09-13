@@ -207,6 +207,11 @@ export function assertRunState(value: unknown): asserts value is RunState {
     fail("failure_reason must be a string");
   if (value.stop_reason !== undefined && typeof value.stop_reason !== "string")
     fail("stop_reason must be a string");
+  if (
+    value.phase === "WAITING_FOR_CHIEF" &&
+    value.waiting_handoff === undefined
+  )
+    fail("WAITING_FOR_CHIEF requires waiting_handoff");
   if (value.waiting_handoff !== undefined) {
     if (!record(value.waiting_handoff))
       fail("waiting_handoff must be an object");
@@ -224,23 +229,26 @@ export function assertRunState(value: unknown): asserts value is RunState {
       "waiting_handoff"
     );
     if (
-      value.waiting_handoff.kind !== undefined &&
-      !["select", "review", "final_review"].includes(
-        value.waiting_handoff.kind as string
-      )
+      typeof value.waiting_handoff.kind !== "string" ||
+      !["select", "review", "final_review"].includes(value.waiting_handoff.kind)
     )
       fail("waiting_handoff.kind is unknown");
-    if (value.waiting_handoff.run_id !== undefined)
-      string(value.waiting_handoff.run_id, "waiting_handoff.run_id");
-    if (value.waiting_handoff.round !== undefined)
-      integer(value.waiting_handoff.round, "waiting_handoff.round", 1);
+    string(value.waiting_handoff.run_id, "waiting_handoff.run_id");
+    integer(value.waiting_handoff.round, "waiting_handoff.round", 1);
     string(value.waiting_handoff.handoff_path, "waiting_handoff.handoff_path");
     string(value.waiting_handoff.handoff_hash, "waiting_handoff.handoff_hash");
-    if (value.waiting_handoff.project_state_hash !== undefined)
+    if (!/^[0-9a-f]{64}$/.test(value.waiting_handoff.handoff_hash))
+      fail("waiting_handoff.handoff_hash must be lowercase SHA-256");
+    if (value.waiting_handoff.kind === "select") {
       string(
         value.waiting_handoff.project_state_hash,
         "waiting_handoff.project_state_hash"
       );
+      if (!/^[0-9a-f]{64}$/.test(value.waiting_handoff.project_state_hash))
+        fail("waiting_handoff.project_state_hash must be lowercase SHA-256");
+    } else if (value.waiting_handoff.project_state_hash !== undefined) {
+      fail("project_state_hash is only valid for select handoffs");
+    }
     iso(value.waiting_handoff.created_at, "waiting_handoff.created_at");
     if (!waitingPhases.has(value.phase))
       fail("waiting_handoff only valid in a waiting phase");

@@ -52,15 +52,24 @@ export interface ProjectState {
   updated_at: string;
 }
 
-export interface WaitingHandoff {
-  kind?: "select" | "review" | "final_review";
-  run_id?: string;
-  round?: number;
+export interface SelectWaitingHandoff {
+  kind: "select";
+  run_id: string;
+  round: number;
   handoff_path: string;
   handoff_hash: string;
-  project_state_hash?: string;
+  project_state_hash: string;
   created_at: string;
 }
+export interface FutureWaitingHandoff {
+  kind: "review" | "final_review";
+  run_id: string;
+  round: number;
+  handoff_path: string;
+  handoff_hash: string;
+  created_at: string;
+}
+export type WaitingHandoff = SelectWaitingHandoff | FutureWaitingHandoff;
 
 export interface HeadEvidence {
   base?: string;

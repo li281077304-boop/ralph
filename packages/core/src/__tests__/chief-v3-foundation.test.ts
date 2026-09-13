@@ -83,6 +83,9 @@ describe("Chief V3 durable foundation", () => {
       parseRunState({ ...run(), phase: "DONE", status: "running" })
     ).toThrow(/DONE/);
     expect(() =>
+      parseRunState({ ...run(), phase: "WAITING_FOR_CHIEF", status: "waiting" })
+    ).toThrow(/waiting_handoff/);
+    expect(() =>
       parseRunState({
         ...run(),
         waiting_handoff: {

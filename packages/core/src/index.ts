@@ -69,6 +69,9 @@ export {
   type ProjectState,
   type ProjectTask,
   type V3Phase,
+  type WaitingHandoff,
+  type SelectWaitingHandoff,
+  type FutureWaitingHandoff,
 } from "./v3/state.js";
 export { assertRunState, assertProjectState } from "./v3/state-invariants.js";
 export { writeJsonAtomic, writeTextAtomic } from "./v3/atomic-json.js";

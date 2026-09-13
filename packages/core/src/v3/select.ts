@@ -1,20 +1,22 @@
 import { createHash } from "node:crypto";
-import { access, mkdir, open } from "node:fs/promises";
+import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { writeJsonAtomic, writeTextAtomic } from "./atomic-json.js";
-import { assertRunState, assertProjectState } from "./state-invariants.js";
+import { assertProjectState, assertRunState } from "./state-invariants.js";
 import { getChiefRunDir, getRoundDir } from "./rounds.js";
 import {
   canonicalizeValue,
   getReadyTasks,
   hashProjectState,
+  loadProjectStateFromProject,
+  saveProjectStateToProject,
 } from "./project-plan.js";
-import { saveProjectStateToProject } from "./project-plan.js";
 import {
+  loadRunState,
   saveRunState,
   type ProjectState,
-  type RunState,
   type ProjectTask,
+  type RunState,
 } from "./state.js";
 
 export const SELECT_HANDOFF_KIND = "select" as const;
@@ -30,7 +32,6 @@ export interface ReferenceCheck {
   evidence: string;
   why_build_if_needed: string;
 }
-
 export interface ChiefSelectDecision {
   action: SelectAction;
   selected_task_id: string | null;
@@ -46,7 +47,6 @@ export interface ChiefSelectDecision {
   handoff_hash: string;
   project_state_hash: string;
 }
-
 export interface SelectHandoff {
   kind: typeof SELECT_HANDOFF_KIND;
   run_id: string;
@@ -56,10 +56,23 @@ export interface SelectHandoff {
   path: string;
   content: string;
 }
-
 export interface SelectPreparation {
   runState: RunState;
   handoff: SelectHandoff;
+}
+
+interface SelectTransition {
+  version: 1;
+  decision_hash: string;
+  before_project_state_hash: string;
+  after_project_state_hash: string;
+  before_run_state_hash: string;
+  after_run_state_hash: string;
+  target_phase: RunState["phase"];
+  target_task_id: string | null;
+  after_project_state: ProjectState;
+  after_run_state: RunState;
+  created_at: string;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -95,6 +108,68 @@ function exactKeys(
   for (const key of Object.keys(value))
     if (!allowed.has(key)) fail(`${label}.${key} is unknown`);
 }
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+function runHash(state: RunState): string {
+  assertRunState(state);
+  return sha256(canonicalizeValue(state));
+}
+function assertTransition(value: unknown): asserts value is SelectTransition {
+  if (!record(value)) throw new Error("Invalid SELECT transition journal");
+  exactKeys(
+    value,
+    [
+      "version",
+      "decision_hash",
+      "before_project_state_hash",
+      "after_project_state_hash",
+      "before_run_state_hash",
+      "after_run_state_hash",
+      "target_phase",
+      "target_task_id",
+      "after_project_state",
+      "after_run_state",
+      "created_at",
+    ],
+    "transition"
+  );
+  if (value.version !== 1)
+    throw new Error("Invalid SELECT transition journal version");
+  for (const field of [
+    "decision_hash",
+    "before_project_state_hash",
+    "after_project_state_hash",
+    "before_run_state_hash",
+    "after_run_state_hash",
+  ])
+    if (
+      typeof value[field] !== "string" ||
+      !/^[0-9a-f]{64}$/.test(value[field])
+    )
+      throw new Error(`Invalid SELECT transition journal ${field}`);
+  if (
+    typeof value.target_phase !== "string" ||
+    (typeof value.target_task_id !== "string" && value.target_task_id !== null)
+  )
+    throw new Error("Invalid SELECT transition target");
+  stringValue(value.created_at, "transition.created_at");
+  if (Number.isNaN(Date.parse(value.created_at)))
+    throw new Error("Invalid SELECT transition timestamp");
+  assertProjectState(value.after_project_state);
+  assertRunState(value.after_run_state);
+  if (
+    hashProjectState(value.after_project_state) !==
+      value.after_project_state_hash ||
+    runHash(value.after_run_state) !== value.after_run_state_hash
+  )
+    throw new Error("SELECT transition after-state hash mismatch");
+  if (
+    value.after_run_state.phase !== value.target_phase ||
+    value.after_run_state.current_task_id !== value.target_task_id
+  )
+    throw new Error("SELECT transition target mismatch");
+}
 
 export function parseChiefSelectDecision(value: unknown): ChiefSelectDecision {
   if (!record(value)) fail("decision must be an object");
@@ -117,13 +192,15 @@ export function parseChiefSelectDecision(value: unknown): ChiefSelectDecision {
     ],
     "decision"
   );
-  const actions = [
-    "CONTINUE_DEVELOPMENT",
-    "RUN_INTEGRATION_UAT",
-    "HUMAN_REQUIRED",
-    "REQUEST_FINAL_REVIEW",
-  ];
-  if (typeof value.action !== "string" || !actions.includes(value.action))
+  if (
+    typeof value.action !== "string" ||
+    ![
+      "CONTINUE_DEVELOPMENT",
+      "RUN_INTEGRATION_UAT",
+      "HUMAN_REQUIRED",
+      "REQUEST_FINAL_REVIEW",
+    ].includes(value.action)
+  )
     fail("action is unknown");
   nullableString(value.selected_task_id, "selected_task_id");
   nonEmpty(value.why_now, "why_now");
@@ -157,8 +234,16 @@ export function parseChiefSelectDecision(value: unknown): ChiefSelectDecision {
     value.round < 1
   )
     fail("round must be a positive integer");
-  nonEmpty(value.handoff_hash, "handoff_hash");
-  nonEmpty(value.project_state_hash, "project_state_hash");
+  if (
+    typeof value.handoff_hash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value.handoff_hash)
+  )
+    fail("handoff_hash must be lowercase SHA-256");
+  if (
+    typeof value.project_state_hash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value.project_state_hash)
+  )
+    fail("project_state_hash must be lowercase SHA-256");
   return value as unknown as ChiefSelectDecision;
 }
 
@@ -175,8 +260,8 @@ export function validateChiefSelectDecision(
     fail("BUILD requires why_build_if_needed");
   if (
     decision.reference_check.decision !== "BUILD" &&
-    decision.reference_check.evidence.length === 0 &&
-    decision.reference_check.decision !== "NOT_APPLICABLE"
+    decision.reference_check.decision !== "NOT_APPLICABLE" &&
+    decision.reference_check.evidence.length === 0
   )
     fail("reference decision requires evidence");
   switch (decision.action) {
@@ -185,26 +270,38 @@ export function validateChiefSelectDecision(
         fail("CONTINUE_DEVELOPMENT requires selected_task_id");
       if (!ready.some((task) => task.id === decision.selected_task_id))
         fail("selected task is not READY");
-      if (decision.human_question !== "")
-        fail("CONTINUE_DEVELOPMENT cannot include human_question");
-      if (decision.uat_scope !== "")
-        fail("CONTINUE_DEVELOPMENT cannot include uat_scope");
+      if (
+        decision.human_question !== "" ||
+        decision.human_options.length !== 0 ||
+        decision.uat_scope !== ""
+      )
+        fail("CONTINUE_DEVELOPMENT cannot include human or UAT fields");
       break;
     case "RUN_INTEGRATION_UAT":
       if (decision.selected_task_id !== null)
         fail("RUN_INTEGRATION_UAT cannot select a task");
       if (decision.uat_scope.length === 0)
         fail("RUN_INTEGRATION_UAT requires uat_scope");
+      if (decision.human_question !== "" || decision.human_options.length !== 0)
+        fail("RUN_INTEGRATION_UAT cannot include human fields");
       break;
     case "HUMAN_REQUIRED":
       if (decision.selected_task_id !== null)
         fail("HUMAN_REQUIRED cannot select a task");
       if (decision.human_question.length === 0)
         fail("HUMAN_REQUIRED requires human_question");
+      if (decision.uat_scope !== "")
+        fail("HUMAN_REQUIRED cannot include uat_scope");
       break;
     case "REQUEST_FINAL_REVIEW":
       if (decision.selected_task_id !== null)
         fail("REQUEST_FINAL_REVIEW cannot select a task");
+      if (
+        decision.human_question !== "" ||
+        decision.human_options.length !== 0 ||
+        decision.uat_scope !== ""
+      )
+        fail("REQUEST_FINAL_REVIEW cannot include control fields");
       break;
   }
 }
@@ -221,7 +318,7 @@ function taskSummary(task: ProjectTask): string {
   ].join("\n");
 }
 
-export async function prepareSelectHandoff(
+async function prepareSelectHandoffFromState(
   projectRoot: string,
   runState: RunState,
   projectState: ProjectState
@@ -230,6 +327,7 @@ export async function prepareSelectHandoff(
   assertProjectState(projectState);
   if (runState.phase !== "SELECT" || runState.status !== "running")
     throw new Error("SELECT handoff requires SELECT/running run state");
+  await saveProjectStateToProject(projectRoot, projectState);
   const projectStateHash = hashProjectState(projectState);
   const ready = getReadyTasks(projectState);
   const nonReady = projectState.tasks.filter(
@@ -244,9 +342,7 @@ export async function prepareSelectHandoff(
     goal: projectState.goal,
     milestone: projectState.current_milestone,
   };
-  const handoffHash = createHash("sha256")
-    .update(canonicalizeValue(payload), "utf8")
-    .digest("hex");
+  const handoffHash = sha256(canonicalizeValue(payload));
   const content = [
     "# Chief SELECT Handoff",
     "",
@@ -279,17 +375,17 @@ export async function prepareSelectHandoff(
     "Do not invent, split, reprioritize, cancel, or inject tasks.",
     "",
   ].join("\n");
-  const roundDir = getRoundDir(
-    getChiefRunDir(projectRoot, runState.run_id),
-    runState.round
+  const handoffPath = join(
+    getRoundDir(getChiefRunDir(projectRoot, runState.run_id), runState.round),
+    "select_handoff.md"
   );
-  const handoffPath = join(roundDir, "select_handoff.md");
   await writeTextAtomic(handoffPath, content);
+  const createdAt = new Date().toISOString();
   const nextRunState: RunState = {
     ...runState,
     phase: "WAITING_FOR_CHIEF",
     status: "waiting",
-    updated_at: new Date().toISOString(),
+    updated_at: createdAt,
     waiting_handoff: {
       kind: "select",
       run_id: runState.run_id,
@@ -297,7 +393,7 @@ export async function prepareSelectHandoff(
       handoff_path: handoffPath,
       handoff_hash: handoffHash,
       project_state_hash: projectStateHash,
-      created_at: new Date().toISOString(),
+      created_at: createdAt,
     },
   };
   assertRunState(nextRunState);
@@ -319,74 +415,31 @@ export async function prepareSelectHandoff(
   };
 }
 
-async function writeExclusive(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const handle = await open(path, "wx");
-  try {
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
-  } finally {
-    await handle.close();
-  }
+export async function prepareSelectHandoff(
+  projectRoot: string,
+  runId: string
+): Promise<SelectPreparation> {
+  const runState = await loadRunState(
+    join(getChiefRunDir(projectRoot, runId), "RUN_STATE.json")
+  );
+  const projectState = await loadProjectStateFromProject(projectRoot);
+  return prepareSelectHandoffFromState(projectRoot, runState, projectState);
 }
 
-export async function applySelectDecision(
-  projectRoot: string,
+function transitionFor(
+  decision: ChiefSelectDecision,
   waitingRunState: RunState,
-  projectState: ProjectState,
-  rawDecision: unknown
-): Promise<{ runState: RunState; projectState: ProjectState }> {
-  assertRunState(waitingRunState);
-  assertProjectState(projectState);
-  const decision = parseChiefSelectDecision(rawDecision);
-  if (
-    waitingRunState.phase !== "WAITING_FOR_CHIEF" ||
-    waitingRunState.waiting_handoff?.kind !== "select"
-  )
-    throw new Error("run is not waiting for a SELECT decision");
-  const handoff = waitingRunState.waiting_handoff;
-  if (
-    decision.run_id !== waitingRunState.run_id ||
-    decision.round !== waitingRunState.round ||
-    decision.run_id !== handoff.run_id ||
-    decision.round !== handoff.round
-  )
-    throw new Error("SELECT decision identity does not match waiting handoff");
-  const currentProjectHash = hashProjectState(projectState);
-  if (
-    decision.project_state_hash !== handoff.project_state_hash ||
-    decision.project_state_hash !== currentProjectHash
-  )
-    throw new Error(
-      "SELECT decision project_state_hash does not match current project state"
-    );
-  if (decision.handoff_hash !== handoff.handoff_hash)
-    throw new Error(
-      "SELECT decision handoff_hash does not match waiting handoff"
-    );
-  validateChiefSelectDecision(decision, projectState);
-  const decisionPath = join(
-    getRoundDir(
-      getChiefRunDir(projectRoot, waitingRunState.run_id),
-      waitingRunState.round
-    ),
-    "select_decision.json"
-  );
-  try {
-    await access(decisionPath);
-    throw new Error("SELECT decision was already consumed");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  await writeExclusive(decisionPath, decision);
-  let nextProject = projectState;
-  let nextPhase: RunState["phase"] = "FINAL_REVIEW";
-  let nextStatus: RunState["status"] = "running";
-  let nextTask: string | null = null;
+  projectState: ProjectState
+): SelectTransition {
+  let afterProjectState = projectState;
+  let targetPhase: RunState["phase"] = "FINAL_REVIEW";
+  let targetStatus: RunState["status"] = "running";
+  let targetTask: string | null = null;
   if (decision.action === "CONTINUE_DEVELOPMENT") {
     const selected = projectState.tasks.find(
       (task) => task.id === decision.selected_task_id
     )!;
-    nextProject = {
+    afterProjectState = {
       ...projectState,
       current_task_id: selected.id,
       updated_at: new Date().toISOString(),
@@ -400,28 +453,208 @@ export async function applySelectDecision(
           : task
       ),
     };
-    nextPhase = "WORKER";
-    nextTask = selected.id;
+    targetPhase = "WORKER";
+    targetTask = selected.id;
   } else if (decision.action === "RUN_INTEGRATION_UAT")
-    nextPhase = "INTEGRATION_UAT";
+    targetPhase = "INTEGRATION_UAT";
   else if (decision.action === "HUMAN_REQUIRED") {
-    nextPhase = "HUMAN_REQUIRED";
-    nextStatus = "waiting";
+    targetPhase = "HUMAN_REQUIRED";
+    targetStatus = "waiting";
   }
-  const nextRun: RunState = {
-    ...waitingRunState,
-    phase: nextPhase,
-    status: nextStatus,
-    current_task_id: nextTask,
-    waiting_handoff: undefined,
+  const { waiting_handoff: _waitingHandoff, ...runWithoutHandoff } =
+    waitingRunState;
+  const afterRunState: RunState = {
+    ...runWithoutHandoff,
+    phase: targetPhase,
+    status: targetStatus,
+    current_task_id: targetTask,
     updated_at: new Date().toISOString(),
   };
-  assertProjectState(nextProject);
-  assertRunState(nextRun);
-  await saveProjectStateToProject(projectRoot, nextProject);
-  await saveRunState(
-    join(getChiefRunDir(projectRoot, waitingRunState.run_id), "RUN_STATE.json"),
-    nextRun
+  assertProjectState(afterProjectState);
+  assertRunState(afterRunState);
+  return {
+    version: 1,
+    decision_hash: sha256(canonicalizeValue(decision)),
+    before_project_state_hash: hashProjectState(projectState),
+    after_project_state_hash: hashProjectState(afterProjectState),
+    before_run_state_hash: runHash(waitingRunState),
+    after_run_state_hash: runHash(afterRunState),
+    target_phase: targetPhase,
+    target_task_id: targetTask,
+    after_project_state: afterProjectState,
+    after_run_state: afterRunState,
+    created_at: new Date().toISOString(),
+  };
+}
+
+async function readJsonFile(path: string): Promise<unknown | undefined> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+async function writeExclusive(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const handle = await open(path, "wx");
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+async function applyFromAuthoritative(
+  projectRoot: string,
+  runId: string,
+  rawDecision?: unknown
+): Promise<{ runState: RunState; projectState: ProjectState }> {
+  const runDir = getChiefRunDir(projectRoot, runId);
+  const runPath = join(runDir, "RUN_STATE.json");
+  const projectState = await loadProjectStateFromProject(projectRoot);
+  const currentRunState = await loadRunState(runPath);
+  const handoff =
+    currentRunState.phase === "WAITING_FOR_CHIEF" &&
+    currentRunState.waiting_handoff?.kind === "select"
+      ? currentRunState.waiting_handoff
+      : undefined;
+  const isWaiting = handoff !== undefined;
+  if (
+    !isWaiting &&
+    currentRunState.phase !== "WORKER" &&
+    currentRunState.phase !== "INTEGRATION_UAT" &&
+    currentRunState.phase !== "HUMAN_REQUIRED" &&
+    currentRunState.phase !== "FINAL_REVIEW"
+  )
+    throw new Error("run is not waiting for a SELECT decision");
+  const waitingRunState = isWaiting ? currentRunState : undefined;
+  const round = currentRunState.round;
+  const decisionPath = join(getRoundDir(runDir, round), "select_decision.json");
+  const transitionPath = join(
+    getRoundDir(runDir, round),
+    "select_transition.json"
   );
-  return { runState: nextRun, projectState: nextProject };
+  const storedRaw = await readJsonFile(decisionPath);
+  let decision: ChiefSelectDecision;
+  if (storedRaw === undefined) {
+    if (!isWaiting || rawDecision === undefined || !handoff)
+      throw new Error("SELECT decision is missing");
+    decision = parseChiefSelectDecision(rawDecision);
+    if (
+      decision.run_id !== runId ||
+      decision.round !== round ||
+      decision.run_id !== handoff.run_id ||
+      decision.round !== handoff.round
+    )
+      throw new Error(
+        "SELECT decision identity does not match waiting handoff"
+      );
+    if (decision.handoff_hash !== handoff.handoff_hash)
+      throw new Error(
+        "SELECT decision handoff_hash does not match waiting handoff"
+      );
+    if (
+      decision.project_state_hash !== handoff.project_state_hash ||
+      decision.project_state_hash !== hashProjectState(projectState)
+    )
+      throw new Error(
+        "SELECT decision project_state_hash does not match current project state"
+      );
+    validateChiefSelectDecision(decision, projectState);
+    await writeExclusive(decisionPath, decision);
+  } else {
+    decision = parseChiefSelectDecision(storedRaw);
+    if (
+      rawDecision !== undefined &&
+      sha256(canonicalizeValue(parseChiefSelectDecision(rawDecision))) !==
+        sha256(canonicalizeValue(decision))
+    )
+      throw new Error("SELECT decision is immutable and cannot be replaced");
+  }
+  const decisionHash = sha256(canonicalizeValue(decision));
+  if (
+    handoff &&
+    (decision.run_id !== runId ||
+      decision.round !== round ||
+      decision.run_id !== handoff.run_id ||
+      decision.round !== handoff.round)
+  )
+    throw new Error("SELECT decision identity does not match waiting handoff");
+  if (handoff && decision.handoff_hash !== handoff.handoff_hash)
+    throw new Error(
+      "SELECT decision handoff_hash does not match waiting handoff"
+    );
+  const currentProjectHash = hashProjectState(projectState);
+  if (handoff && decision.project_state_hash !== handoff.project_state_hash)
+    throw new Error(
+      "SELECT decision project_state_hash does not match waiting handoff"
+    );
+  let transition: SelectTransition;
+  const transitionRaw = await readJsonFile(transitionPath);
+  if (transitionRaw !== undefined) {
+    assertTransition(transitionRaw);
+    if (transitionRaw.decision_hash !== decisionHash)
+      throw new Error("SELECT transition journal does not match decision");
+    transition = transitionRaw;
+  } else {
+    if (!isWaiting)
+      throw new Error(
+        "SELECT transition journal is missing for a completed decision"
+      );
+    if (currentProjectHash !== decision.project_state_hash)
+      throw new Error(
+        "SELECT decision project_state_hash does not match current project state"
+      );
+    validateChiefSelectDecision(decision, projectState);
+    transition = transitionFor(decision, currentRunState, projectState);
+    await writeExclusive(transitionPath, transition);
+  }
+  const projectNow = await loadProjectStateFromProject(projectRoot);
+  const projectNowHash = hashProjectState(projectNow);
+  if (
+    projectNowHash !== transition.before_project_state_hash &&
+    projectNowHash !== transition.after_project_state_hash
+  )
+    throw new Error(
+      "project state is neither the expected before nor after SELECT transition"
+    );
+  if (projectNowHash === transition.before_project_state_hash)
+    await saveProjectStateToProject(
+      projectRoot,
+      transition.after_project_state
+    );
+  const runNow = await loadRunState(runPath);
+  const runNowHash = runHash(runNow);
+  if (
+    runNowHash !== transition.before_run_state_hash &&
+    runNowHash !== transition.after_run_state_hash
+  )
+    throw new Error(
+      "run state is neither the expected before nor after SELECT transition"
+    );
+  if (runNowHash === transition.before_run_state_hash)
+    await saveRunState(runPath, transition.after_run_state);
+  const receiptPath = join(
+    getRoundDir(runDir, round),
+    "select_transition_receipt.json"
+  );
+  if ((await readJsonFile(receiptPath)) === undefined)
+    await writeJsonAtomic(receiptPath, {
+      version: 1,
+      decision_hash: decisionHash,
+      completed_at: new Date().toISOString(),
+    });
+  return {
+    runState: transition.after_run_state,
+    projectState: transition.after_project_state,
+  };
+}
+
+export async function applySelectDecision(
+  projectRoot: string,
+  runId: string,
+  rawDecision?: unknown
+): Promise<{ runState: RunState; projectState: ProjectState }> {
+  return applyFromAuthoritative(projectRoot, runId, rawDecision);
 }
