@@ -38,13 +38,27 @@ export async function runExternalChiefGuiBridge(config, context) {
       "Waiting state has no handoff hash for GUI Bridge correlation"
     );
   const message = chiefPrompt(context, handoff);
+  return runExternalChiefGuiRoundtrip(config, {
+    identity,
+    message,
+    closingMarker: END_MARKER,
+  });
+}
+
+/**
+ * Shared transport seam for protocol-specific Chief requests. The browser
+ * mechanics stay in this module; callers own prompt/schema parsing and durable
+ * state transitions.
+ */
+export async function runExternalChiefGuiRoundtrip(config, request) {
   const env = loadExtensionEnv(config.extension_env_file);
   const session = config.session ?? "chrome";
   const timeoutMs = config.timeout_ms ?? 180_000;
   const code = extensionRoundtripCode(
     config.conversation_url,
-    message,
-    identity,
+    request.message,
+    request.identity,
+    request.closingMarker,
     timeoutMs
   );
   await ensureConversationTab(session, config.conversation_url, env);
@@ -175,7 +189,13 @@ function expandHome(path) {
     : path;
 }
 
-function extensionRoundtripCode(conversationUrl, message, identity, timeoutMs) {
+function extensionRoundtripCode(
+  conversationUrl,
+  message,
+  identity,
+  closingMarker,
+  timeoutMs
+) {
   return `(async page => {
     const expectedUrl = ${JSON.stringify(conversationUrl)};
     const message = ${JSON.stringify(message)};
@@ -205,7 +225,7 @@ function extensionRoundtripCode(conversationUrl, message, identity, timeoutMs) {
           try { text = await assistant.nth(index).innerText(); } catch { continue; }
           if (text.includes(identity)) {
             reply = text;
-            if (text.includes(${JSON.stringify(END_MARKER)})) return { reply };
+            if (text.includes(${JSON.stringify(closingMarker)})) return { reply };
           }
         }
       }

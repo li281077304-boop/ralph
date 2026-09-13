@@ -75,8 +75,20 @@ export function createNonce(random = Math.random) {
 }
 
 export function extractMarkedJson(text) {
+  return extractMarkedJsonBlock(
+    text,
+    "<<<CHIEF_VERDICT_JSON>>>",
+    "<<<END_CHIEF_VERDICT_JSON>>>"
+  );
+}
+
+export function extractMarkedJsonBlock(text, openingMarker, closingMarker) {
+  if (typeof text !== "string")
+    throw new GuiBridgeError("MARKER_MISSING", "Reply is not text");
   const match = text.match(
-    /<<<CHIEF_VERDICT_JSON>>>\s*([\s\S]*?)\s*<<<END_CHIEF_VERDICT_JSON>>>/
+    new RegExp(
+      `${escapeRegex(openingMarker)}\\s*([\\s\\S]*?)\\s*${escapeRegex(closingMarker)}`
+    )
   );
   if (!match)
     throw new GuiBridgeError(ERROR_CODES.MARKER, "Reply marker is missing");
@@ -88,6 +100,10 @@ export function extractMarkedJson(text) {
       `Reply marker JSON is invalid: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function validateVerdict(verdict, nonce) {

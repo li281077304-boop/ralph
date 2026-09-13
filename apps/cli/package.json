@@ -29,6 +29,7 @@
     "ralph-afk": "./bin/ralph-afk.js",
     "ralph-ghafk": "./bin/ralph-ghafk.js",
     "ralph-chief": "./bin/ralph-chief.js",
+    "ralph-chief-v3-select": "./bin/ralph-chief-v3-select.js",
     "ralph-gui-bridge": "./bin/ralph-gui-bridge.js"
   },
   "files": [
