@@ -274,6 +274,7 @@ test("External Chief failure preserves WAITING_FOR_CHIEF and resumes the same ha
   });
   assert.equal(first.status, "WAITING_FOR_CHIEF");
   assert.equal(first.runState.phase, "WAITING_FOR_CHIEF");
+  const commitsAfterFirst = git(f.root, ["rev-list", "--count", "HEAD"]);
   const reviews = [];
   const second = await runV3UnattendedTask({
     projectRoot: f.root,
@@ -288,4 +289,5 @@ test("External Chief failure preserves WAITING_FOR_CHIEF and resumes the same ha
     goal.calls.filter(([method]) => method === "thread/start").length,
     1
   );
+  assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), commitsAfterFirst);
 });

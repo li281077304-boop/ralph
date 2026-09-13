@@ -13,12 +13,14 @@ const ASSISTANT_SELECTORS = [
   'article[data-testid^="conversation-turn"]',
 ];
 
-const INPUT_SELECTORS = [
+export const INPUT_SELECTORS = [
+  "#prompt-textarea",
   '[data-testid="textbox"]',
+  '[data-testid="composer-text-input"]',
   'textarea[placeholder*="Message" i]',
   'textarea[placeholder*="消息"]',
   '[contenteditable="true"][role="textbox"]',
-  '[contenteditable="true"]',
+  'div.ProseMirror[contenteditable="true"]',
   "textarea",
 ];
 
@@ -203,17 +205,77 @@ function extensionRoundtripCode(
     const deadline = Date.now() + ${timeoutMs};
     if (!page.url().startsWith(expectedUrl))
       throw new Error("CONVERSATION_NOT_FOUND: " + page.url());
-    let input;
-    while (!input && Date.now() < deadline) {
-      for (const selector of ${JSON.stringify(INPUT_SELECTORS)}) {
-        const locator = page.locator(selector).last();
-        try { if (await locator.isVisible()) { input = locator; break; } } catch {}
+    const selectors = ${JSON.stringify(INPUT_SELECTORS)};
+    const diagnostics = async () => {
+      const body = await page.locator("body").innerText().catch(() => "");
+      const title = await page.title().catch(() => "");
+      const text = (title + "\\n" + body).slice(0, 2500);
+      const counts = [];
+      for (const selector of selectors) {
+        try { counts.push({ selector, count: await page.locator(selector).count() }); }
+        catch { counts.push({ selector, count: 0 }); }
       }
-      if (!input) await page.waitForTimeout(250);
+      const loginRequired = /\\/(?:auth\\/login|login)(?:[/?#]|$)/i.test(page.url()) || /log[ -]?in|sign[ -]?in|登录/i.test(text);
+      const humanVerification = /captcha|verify you are human|human verification|人机验证|验证你是人|安全验证/i.test(text);
+      const conversationUnavailable = /conversation (?:not found|does not exist|unavailable)|对话(?:不存在|不可用|无法加载)|找不到对话/i.test(text);
+      const conversationReadOnly = /read[- ]?only|view[- ]?only|只读|仅查看/i.test(text);
+      const appError = /something went wrong|application error|出错了|发生错误|应用错误/i.test(text);
+      return { url: page.url(), title, composer_candidate_counts: counts, login_required: loginRequired, human_verification: humanVerification, conversation_unavailable: conversationUnavailable, conversation_read_only: conversationReadOnly, app_error: appError };
+    };
+    const visibleEditable = async (locator) => {
+      try {
+        if (!(await locator.isVisible())) return false;
+        if (typeof locator.isEditable === "function" && !(await locator.isEditable())) return false;
+        return true;
+      } catch { return false; }
+    };
+    const findComposer = async () => {
+      for (const selector of selectors) {
+        const locator = page.locator(selector).last();
+        if (await visibleEditable(locator)) return locator;
+      }
+      if (typeof page.getByRole === "function") {
+        const locator = page.getByRole("textbox").last();
+        if (await visibleEditable(locator)) return locator;
+      }
+      return undefined;
+    };
+    let input;
+    let recovered = false;
+    const discoveryStarted = Date.now();
+    while (!input && Date.now() < deadline) {
+      input = await findComposer();
+      if (input) break;
+      const pageState = await diagnostics();
+      if (pageState.login_required) throw new Error("NOT_LOGGED_IN: " + JSON.stringify(pageState));
+      if (pageState.human_verification) throw new Error("HUMAN_VERIFICATION_REQUIRED: " + JSON.stringify(pageState));
+      if (pageState.conversation_unavailable || pageState.conversation_read_only) throw new Error("CONVERSATION_NOT_FOUND: " + JSON.stringify(pageState));
+      if (pageState.app_error) throw new Error("CHATGPT_APP_ERROR: " + JSON.stringify(pageState));
+      if (!recovered && Date.now() - discoveryStarted >= 1500) {
+        recovered = true;
+        await page.reload({ waitUntil: "domcontentloaded", timeout: Math.max(1000, Math.min(30000, deadline - Date.now())) }).catch(() => {});
+        await page.waitForTimeout(500);
+      } else {
+        await page.waitForTimeout(250);
+      }
     }
-    if (!input) throw new Error("INPUT_NOT_FOUND");
+    if (!input) {
+      const pageState = await diagnostics();
+      throw new Error("INPUT_NOT_FOUND: " + JSON.stringify(pageState));
+    }
     await input.fill(message);
     await input.press("Enter");
+    await page.waitForTimeout(250);
+    try {
+      const remaining = typeof input.inputValue === "function"
+        ? await input.inputValue()
+        : await input.innerText();
+      if (typeof remaining === "string" && remaining.includes(message))
+        throw new Error("SEND_FAILED: " + JSON.stringify(await diagnostics()));
+    } catch (error) {
+      if (String(error?.message ?? error).startsWith("SEND_FAILED:")) throw error;
+      throw new Error("SEND_FAILED: submission state was ambiguous; " + JSON.stringify(await diagnostics()));
+    }
     let reply = "";
     while (Date.now() < deadline) {
       for (const selector of ${JSON.stringify(ASSISTANT_SELECTORS)}) {
@@ -327,6 +389,16 @@ function runCliCommand(session, args, env, timeoutMs) {
 
 function classifyBridgeError(error, signal) {
   const text = String(error ?? "");
+  for (const code of [
+    "NOT_LOGGED_IN",
+    "HUMAN_VERIFICATION_REQUIRED",
+    "CONVERSATION_NOT_FOUND",
+    "CHATGPT_APP_ERROR",
+    "INPUT_NOT_FOUND",
+    "SEND_FAILED",
+  ]) {
+    if (text.includes(code)) return code;
+  }
   if (text.includes("CONVERSATION_NOT_FOUND")) return "CONVERSATION_NOT_FOUND";
   if (text.includes("INPUT_NOT_FOUND")) return "INPUT_NOT_FOUND";
   if (text.includes("ASSISTANT_REPLY"))
@@ -336,3 +408,5 @@ function classifyBridgeError(error, signal) {
   if (signal) return "CHROME_ATTACH_FAILED";
   return "CHROME_ATTACH_FAILED";
 }
+
+export { classifyBridgeError, extensionRoundtripCode };
