@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { join } from "node:path";
 import {
   getChiefRunDir,
   inspectActiveWriterLock,
+  runMachineGatePhase,
   runWorkerPhase,
   runV3WorkSlice,
   saveProjectStateToProject,
@@ -250,6 +252,7 @@ test("checkpoint recovery reuses the canonical commit without duplication", asyn
   const state = JSON.parse(await readFile(statePath, "utf8"));
   state.phase = "CHECKPOINT";
   state.status = "running";
+  await rm(join(getChiefRunDir(f.root, f.runId), "rounds/001/checkpoint.json"));
   await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
   const resumed = await runV3WorkSlice({
     projectRoot: f.root,
@@ -260,6 +263,66 @@ test("checkpoint recovery reuses the canonical commit without duplication", asyn
   assert.equal(resumed.runState.phase, "CHIEF_REVIEW");
   assert.equal(git(f.root, ["rev-parse", "HEAD"]), head);
   assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), "2");
+});
+
+test("local checkpoint commit created before a crash is reused and pushed", async () => {
+  const f = await fixture();
+  const workerConfig = config();
+  await runWorkerPhase({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+    runAgent: async () => ({ text: "no-op", meta: {} }),
+  });
+  await runMachineGatePhase({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+    runGate: async () => ({ passed: true, commands: [] }),
+  });
+  const runDir = getChiefRunDir(f.root, f.runId);
+  const state = JSON.parse(
+    await readFile(join(runDir, "RUN_STATE.json"), "utf8")
+  );
+  const base = git(f.root, ["rev-parse", "HEAD"]);
+  const round = join(runDir, "rounds/001");
+  const intent = {
+    version: 1,
+    run_id: f.runId,
+    round: 1,
+    task_id: "task-1",
+    base_sha: base,
+    branch: "feature/test",
+    remote: "origin",
+    changed_paths: [],
+    diff_hash: createHash("sha256").update("\n").digest("hex"),
+    gate_passed: true,
+    commit_subject: "ralph(v3): task-1 round 1",
+    created_at: now,
+  };
+  await writeFile(
+    join(round, "checkpoint_intent.json"),
+    `${JSON.stringify(intent, null, 2)}\n`
+  );
+  git(f.root, [
+    "commit",
+    "--allow-empty",
+    "-qm",
+    `ralph(v3): task-1 round 1\n\nRalph-Run-ID: ${f.runId}\nRalph-Round: 1\nRalph-Task-ID: task-1`,
+  ]);
+  const resumed = await runV3WorkSlice({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+  });
+  assert.equal(resumed.runState.phase, "CHIEF_REVIEW");
+  assert.equal(
+    git(f.root, ["ls-remote", "--heads", "origin", "feature/test"]).split(
+      /\s+/
+    )[0],
+    git(f.root, ["rev-parse", "HEAD"])
+  );
+  assert.equal(state.phase, "CHECKPOINT");
 });
 
 test("completed Worker evidence resumes from WORKER without rerunning the Worker", async () => {
