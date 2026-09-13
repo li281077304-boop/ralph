@@ -156,6 +156,7 @@ export {
   type V3WorkerRunner,
   type WorkerPhaseResult,
 } from "./v3/worker.js";
+export { readV3Status, type V3StatusSnapshot } from "./v3/status.js";
 export {
   runMachineGatePhase,
   type V3GateConfig,
