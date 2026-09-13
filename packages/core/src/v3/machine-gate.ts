@@ -79,7 +79,17 @@ async function readArtifact(
 }
 
 function gateFromArtifact(value: Record<string, unknown>): MachineGateResult {
-  if (typeof value.passed !== "boolean" || !Array.isArray(value.commands))
+  if (
+    typeof value.passed !== "boolean" ||
+    !Array.isArray(value.commands) ||
+    !value.before_workspace_fingerprint ||
+    !value.after_workspace_fingerprint ||
+    typeof value.before_branch !== "string" ||
+    typeof value.after_branch !== "string" ||
+    typeof value.policy_passed !== "boolean" ||
+    !Array.isArray(value.policy_violations) ||
+    value.policy_violations.some((item) => typeof item !== "string")
+  )
     throw new Error("machine_gate.json is malformed");
   return {
     passed: value.passed,
@@ -113,12 +123,14 @@ export async function runMachineGatePhase(options: {
   const before = guard.snapshot();
   const workerEvidencePath = join(roundDir, "worker_evidence.json");
   const workerEvidence = await readArtifact(workerEvidencePath);
+  const existing = await readArtifact(outputPath);
   if (
-    !workerEvidence ||
-    workerEvidence.completed !== true ||
-    JSON.stringify(workerEvidence.after_workspace_fingerprint) !==
-      JSON.stringify(workspaceFingerprint(before)) ||
-    workerEvidence.after_branch !== before.branch
+    !existing &&
+    (!workerEvidence ||
+      workerEvidence.completed !== true ||
+      JSON.stringify(workerEvidence.after_workspace_fingerprint) !==
+        JSON.stringify(workspaceFingerprint(before)) ||
+      workerEvidence.after_branch !== before.branch)
   ) {
     const failed = failState(
       state,
@@ -127,7 +139,7 @@ export async function runMachineGatePhase(options: {
     await saveRunState(path, failed);
     return { runState: failed, policyFailure: failed.failure_reason };
   }
-  const existing = await readArtifact(outputPath);
+  if (!workerEvidence) throw new Error("Machine Gate requires Worker evidence");
   if (existing) {
     const expected = existing.after_workspace_fingerprint;
     if (
@@ -143,9 +155,24 @@ export async function runMachineGatePhase(options: {
       typeof afterBranch !== "string" ||
       beforeBranch !== afterBranch ||
       afterBranch !== before.branch ||
+      !workerEvidence ||
+      workerEvidence.completed !== true ||
       workerEvidence.after_branch !== afterBranch
     ) {
       throw new Error("machine gate recovery branch evidence mismatch");
+    }
+    if (!existing.policy_passed) {
+      const violations = existing.policy_violations as string[];
+      const failed = failState(
+        state,
+        `Machine Gate policy failure: ${violations.join(", ")}`
+      );
+      await saveRunState(path, failed);
+      return {
+        runState: failed,
+        gate,
+        policyFailure: failed.failure_reason,
+      };
     }
     const next: RunState = {
       ...state,
@@ -191,11 +218,17 @@ export async function runMachineGatePhase(options: {
     after_branch: after.branch,
     created_at: new Date().toISOString(),
   };
-  await writeJsonAtomic(outputPath, artifactValue);
   if (after.head !== before.head) disallowed.push("HEAD");
   if (after.branch !== before.branch) disallowed.push("branch");
   disallowed.push(...requiredCleanViolations);
-  if (disallowed.length) {
+  const policyPassed = disallowed.length === 0;
+  const artifactWithPolicy = {
+    ...artifactValue,
+    policy_passed: policyPassed,
+    policy_violations: disallowed,
+  };
+  await writeJsonAtomic(outputPath, artifactWithPolicy);
+  if (!policyPassed) {
     const failed = failState(
       state,
       `Machine Gate policy failure: ${disallowed.join(", ")}`
@@ -203,7 +236,7 @@ export async function runMachineGatePhase(options: {
     await saveRunState(path, failed);
     return {
       runState: failed,
-      gate: { ...gate, passed: false, trackedChanges: disallowed },
+      gate: { ...gate, trackedChanges: disallowed },
       policyFailure: failed.failure_reason,
     };
   }

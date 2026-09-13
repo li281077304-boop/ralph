@@ -113,6 +113,23 @@ function workingTreeDiffHash(root) {
     .digest("hex");
 }
 
+async function expectedTreeSha(root, baseSha) {
+  const tempDir = await mkdtemp(join(tmpdir(), "ralph-v3-index-test-"));
+  const indexPath = join(tempDir, "index");
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: indexPath };
+    execFileSync("git", ["read-tree", baseSha], { cwd: root, env });
+    execFileSync("git", ["add", "-A"], { cwd: root, env });
+    return execFileSync("git", ["write-tree"], {
+      cwd: root,
+      env,
+      encoding: "utf8",
+    }).trim();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function prepareCheckpoint(f, overrides = {}) {
   const workerConfig = config(overrides);
   await runWorkerPhase({
@@ -276,6 +293,88 @@ test("Gate tracked source mutation is a policy failure and never checkpoints", a
   assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), "1");
 });
 
+test("durable policy-failed Gate artifact blocks crash recovery", async () => {
+  const f = await fixture();
+  const workerConfig = config();
+  await runWorkerPhase({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+    runAgent: async () => ({ text: "no-op", meta: {} }),
+  });
+  const gated = await runMachineGatePhase({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+    runGate: async () => {
+      await writeFile(join(f.root, "app.txt"), "gate changed source\n");
+      return { passed: true, commands: [] };
+    },
+  });
+  assert.equal(gated.runState.phase, "FAILED");
+  const artifact = JSON.parse(
+    await readFile(
+      join(getChiefRunDir(f.root, f.runId), "rounds/001/machine_gate.json"),
+      "utf8"
+    )
+  );
+  assert.equal(artifact.policy_passed, false);
+  assert.ok(artifact.policy_violations.length > 0);
+  const statePath = join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json");
+  const state = JSON.parse(await readFile(statePath, "utf8"));
+  state.phase = "MACHINE_GATE";
+  state.status = "running";
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  const resumed = await runV3WorkSlice({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+  });
+  assert.equal(resumed.runState.phase, "FAILED");
+  assert.match(resumed.runState.failure_reason ?? "", /policy failure/);
+  assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), "1");
+  assert.equal(
+    git(f.root, ["ls-remote", "--heads", "origin", "feature/test"]).split(
+      /\s+/
+    )[0],
+    git(f.root, ["rev-parse", "HEAD"])
+  );
+});
+
+test("durable required-clean policy failure blocks crash recovery", async () => {
+  const f = await fixture();
+  const workerConfig = config({ required_clean_patterns: ["app.txt"] });
+  await runWorkerPhase({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+    runAgent: async () => {
+      await writeFile(join(f.root, "app.txt"), "worker\n");
+      return { text: "done", meta: {} };
+    },
+  });
+  const gated = await runMachineGatePhase({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+    runGate: async () => ({ passed: true, commands: [] }),
+  });
+  assert.equal(gated.runState.phase, "FAILED");
+  const statePath = join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json");
+  const state = JSON.parse(await readFile(statePath, "utf8"));
+  state.phase = "MACHINE_GATE";
+  state.status = "running";
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  const resumed = await runV3WorkSlice({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: workerConfig,
+  });
+  assert.equal(resumed.runState.phase, "FAILED");
+  assert.match(resumed.runState.failure_reason ?? "", /required_clean/);
+  assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), "1");
+});
+
 test("protected branch refuses checkpoint", async () => {
   const f = await fixture("main");
   await assert.rejects(
@@ -346,6 +445,7 @@ test("local checkpoint commit created before a crash is reused and pushed", asyn
   const gatePath = join(round, "machine_gate.json");
   const gateBytes = await readFile(gatePath);
   const gateArtifact = JSON.parse(gateBytes);
+  const expectedTree = await expectedTreeSha(f.root, base);
   const intent = {
     version: 1,
     run_id: f.runId,
@@ -359,6 +459,7 @@ test("local checkpoint commit created before a crash is reused and pushed", asyn
     gate_passed: true,
     gated_workspace_fingerprint: gateArtifact.after_workspace_fingerprint,
     gate_artifact_hash: createHash("sha256").update(gateBytes).digest("hex"),
+    expected_tree_sha: expectedTree,
     commit_subject: "ralph(v3): task-1 round 1",
     created_at: now,
   };
@@ -385,6 +486,66 @@ test("local checkpoint commit created before a crash is reused and pushed", asyn
     git(f.root, ["rev-parse", "HEAD"])
   );
   assert.equal(state.phase, "CHECKPOINT");
+});
+
+test("same-trailer checkpoint with a different tree is rejected", async () => {
+  const f = await fixture();
+  const workerConfig = await prepareCheckpoint(f);
+  const runDir = getChiefRunDir(f.root, f.runId);
+  const round = join(runDir, "rounds/001");
+  const base = git(f.root, ["rev-parse", "HEAD"]);
+  const gatePath = join(round, "machine_gate.json");
+  const gateBytes = await readFile(gatePath);
+  const gateArtifact = JSON.parse(gateBytes);
+  const intent = {
+    version: 1,
+    run_id: f.runId,
+    round: 1,
+    task_id: "task-1",
+    base_sha: base,
+    branch: "feature/test",
+    remote: "origin",
+    changed_paths: ["app.txt"],
+    diff_hash: workingTreeDiffHash(f.root),
+    gate_passed: true,
+    gated_workspace_fingerprint: gateArtifact.after_workspace_fingerprint,
+    gate_artifact_hash: createHash("sha256").update(gateBytes).digest("hex"),
+    expected_tree_sha: await expectedTreeSha(f.root, base),
+    commit_subject: "ralph(v3): task-1 round 1",
+    created_at: now,
+  };
+  await writeFile(
+    join(round, "checkpoint_intent.json"),
+    `${JSON.stringify(intent, null, 2)}\n`
+  );
+  await writeFile(join(f.root, "app.txt"), "different tree\n");
+  git(f.root, ["add", "app.txt"]);
+  git(f.root, [
+    "commit",
+    "-qm",
+    `ralph(v3): task-1 round 1\n\nRalph-Run-ID: ${f.runId}\nRalph-Round: 1\nRalph-Task-ID: task-1`,
+  ]);
+  const remoteBefore = git(f.root, [
+    "ls-remote",
+    "--heads",
+    "origin",
+    "feature/test",
+  ]).split(/\s+/)[0];
+  await assert.rejects(
+    runV3WorkSlice({
+      projectRoot: f.root,
+      runId: f.runId,
+      config: workerConfig,
+    }),
+    /tree does not match/
+  );
+  assert.equal(git(f.root, ["rev-list", "--count", "HEAD"]), "2");
+  assert.equal(
+    git(f.root, ["ls-remote", "--heads", "origin", "feature/test"]).split(
+      /\s+/
+    )[0],
+    remoteBefore
+  );
 });
 
 test("completed Worker evidence resumes from WORKER without rerunning the Worker", async () => {
@@ -429,6 +590,7 @@ test("untracked content mutation after checkpoint intent fails closed", async ()
   const gateBytes = await readFile(gatePath);
   const gateArtifact = JSON.parse(gateBytes);
   const base = git(f.root, ["rev-parse", "HEAD"]);
+  const expectedTree = await expectedTreeSha(f.root, base);
   await writeFile(
     join(round, "checkpoint_intent.json"),
     `${JSON.stringify(
@@ -447,6 +609,7 @@ test("untracked content mutation after checkpoint intent fails closed", async ()
         gate_artifact_hash: createHash("sha256")
           .update(gateBytes)
           .digest("hex"),
+        expected_tree_sha: expectedTree,
         commit_subject: "ralph(v3): task-1 round 1",
         created_at: now,
       },
