@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  acquireActiveWriterLock,
   getChiefRunDir,
   hashProjectState,
+  inspectActiveWriterLock,
   prepareSelectHandoff,
+  releaseActiveWriterLock,
   saveProjectStateToProject,
   saveRunState,
 } from "../packages/core/dist/index.js";
@@ -128,6 +131,10 @@ test("V3 SELECT sends a dedicated prompt and transitions READY task to WORKER", 
     await readFile(join(roundDir, "select_transition.json"), "utf8"),
     /decision_hash/
   );
+  assert.equal(
+    (await inspectActiveWriterLock(fixture.root, fixture.runId)).kind,
+    "none"
+  );
 });
 
 test("waiting handoff is reused and accepted recovery skips GUI", async () => {
@@ -148,6 +155,41 @@ test("waiting handoff is reused and accepted recovery skips GUI", async () => {
   });
   assert.equal(recovered.recovered, true);
   assert.equal(recovered.guiCalls, 0);
+});
+
+test("an accepted decision with invalid recovery state propagates without GUI", async () => {
+  const fixture = await seed();
+  const calls = { count: 0 };
+  await runV3SelectTransport({
+    projectRoot: fixture.root,
+    runId: fixture.runId,
+    transport: validTransport(calls),
+  });
+  await writeFile(
+    join(getChiefRunDir(fixture.root, fixture.runId), "RUN_STATE.json"),
+    `${JSON.stringify({
+      run_id: fixture.runId,
+      version: 1,
+      phase: "FAILED",
+      status: "failed",
+      round: 1,
+      current_task_id: null,
+      started_at: now,
+      updated_at: now,
+    })}\n`
+  );
+  await assert.rejects(
+    runV3SelectTransport({
+      projectRoot: fixture.root,
+      runId: fixture.runId,
+      transport: async () => {
+        calls.count += 1;
+        return { reply: "unexpected" };
+      },
+    }),
+    /not waiting/
+  );
+  assert.equal(calls.count, 1);
 });
 
 test("an existing WAITING SELECT handoff is reused byte-for-byte", async () => {
@@ -201,6 +243,39 @@ test("GUI and protocol failures preserve WAITING_FOR_CHIEF", async () => {
     );
     assert.equal(persisted.phase, "WAITING_FOR_CHIEF");
     assert.equal(persisted.waiting_handoff.kind, "select");
+    assert.equal(
+      (await inspectActiveWriterLock(fixture.root, fixture.runId)).kind,
+      "none"
+    );
+  }
+});
+
+test("a live project writer blocks concurrent SELECT without GUI calls", async () => {
+  for (const ownerMode of ["different", "same"]) {
+    const fixture = await seed();
+    const ownerRunId = ownerMode === "same" ? fixture.runId : "run-A";
+    const owner = await acquireActiveWriterLock(fixture.root, {
+      run_id: ownerRunId,
+      run_state_path: `/checkout/.ralph/chief-runs/${ownerRunId}/RUN_STATE.json`,
+    });
+    const calls = { count: 0 };
+    await assert.rejects(
+      runV3SelectTransport({
+        projectRoot: fixture.root,
+        runId: fixture.runId,
+        transport: async () => {
+          calls.count += 1;
+          return { reply: "unexpected" };
+        },
+      }),
+      /active writer lock/
+    );
+    assert.equal(calls.count, 0);
+    assert.equal(
+      (await inspectActiveWriterLock(fixture.root, fixture.runId)).kind,
+      ownerRunId === fixture.runId ? "live_same_run" : "live_different_run"
+    );
+    await releaseActiveWriterLock(fixture.root, owner);
   }
 });
 

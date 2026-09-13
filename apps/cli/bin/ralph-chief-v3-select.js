@@ -7,11 +7,13 @@ import { fileURLToPath } from "node:url";
 
 import {
   applySelectDecision,
+  acquireActiveWriterLock,
   getChiefRunDir,
   loadChiefConfig,
   loadRunState,
   prepareSelectHandoff,
   parseChiefSelectDecision,
+  releaseActiveWriterLock,
 } from "@daonhan/ralph-core";
 import { runExternalChiefGuiRoundtrip } from "./ralph-gui-chief-bridge.js";
 import { extractMarkedJsonBlock } from "./ralph-gui-bridge.js";
@@ -107,15 +109,9 @@ export function chiefSelectPrompt(preparation) {
 
 async function recoverAcceptedDecision(projectRoot, runId) {
   const runState = await loadRunState(runStatePath(projectRoot, runId));
-  const decisionExists = await exists(
-    selectDecisionPath(projectRoot, runId, runState.round)
-  );
-  try {
-    return await applySelectDecision(projectRoot, runId);
-  } catch (error) {
-    if (decisionExists) throw error;
-    return undefined;
-  }
+  const decisionPath = selectDecisionPath(projectRoot, runId, runState.round);
+  if (!(await exists(decisionPath))) return undefined;
+  return applySelectDecision(projectRoot, runId);
 }
 
 /**
@@ -125,40 +121,49 @@ async function recoverAcceptedDecision(projectRoot, runId) {
 export async function runV3SelectTransport(options) {
   const projectRoot = resolve(options.projectRoot);
   const runId = options.runId;
-  const recovered = await recoverAcceptedDecision(projectRoot, runId);
-  if (recovered) return { ...recovered, recovered: true, guiCalls: 0 };
+  const runStatePathValue = runStatePath(projectRoot, runId);
+  const lock = await acquireActiveWriterLock(projectRoot, {
+    run_id: runId,
+    run_state_path: runStatePathValue,
+  });
+  try {
+    const recovered = await recoverAcceptedDecision(projectRoot, runId);
+    if (recovered) return { ...recovered, recovered: true, guiCalls: 0 };
 
-  let runState = await loadRunState(runStatePath(projectRoot, runId));
-  let preparation;
-  if (runState.phase === "SELECT" && runState.status === "running") {
-    preparation = await prepareSelectHandoff(projectRoot, runId);
-  } else {
-    preparation = await existingSelectHandoff(projectRoot, runState);
-    if (!preparation)
-      throw new Error(
-        "V3 SELECT requires SELECT/running or WAITING_FOR_CHIEF/select state"
-      );
+    let runState = await loadRunState(runStatePathValue);
+    let preparation;
+    if (runState.phase === "SELECT" && runState.status === "running") {
+      preparation = await prepareSelectHandoff(projectRoot, runId);
+    } else {
+      preparation = await existingSelectHandoff(projectRoot, runState);
+      if (!preparation)
+        throw new Error(
+          "V3 SELECT requires SELECT/running or WAITING_FOR_CHIEF/select state"
+        );
+    }
+    runState = preparation.runState;
+    const request = {
+      identity: preparation.handoff.handoff_hash,
+      message: chiefSelectPrompt(preparation),
+      closingMarker: SELECT_CLOSE_MARKER,
+    };
+    const transport =
+      options.transport ??
+      ((value) => runExternalChiefGuiRoundtrip(options.guiConfig, value));
+    const result = await transport(request);
+    if (!result || typeof result.reply !== "string")
+      throw new Error("External Chief GUI transport returned no reply");
+    const rawDecision = extractMarkedJsonBlock(
+      result.reply,
+      SELECT_OPEN_MARKER,
+      SELECT_CLOSE_MARKER
+    );
+    const decision = parseChiefSelectDecision(rawDecision);
+    const applied = await applySelectDecision(projectRoot, runId, decision);
+    return { ...applied, recovered: false, guiCalls: 1 };
+  } finally {
+    await releaseActiveWriterLock(projectRoot, lock);
   }
-  runState = preparation.runState;
-  const request = {
-    identity: preparation.handoff.handoff_hash,
-    message: chiefSelectPrompt(preparation),
-    closingMarker: SELECT_CLOSE_MARKER,
-  };
-  const transport =
-    options.transport ??
-    ((value) => runExternalChiefGuiRoundtrip(options.guiConfig, value));
-  const result = await transport(request);
-  if (!result || typeof result.reply !== "string")
-    throw new Error("External Chief GUI transport returned no reply");
-  const rawDecision = extractMarkedJsonBlock(
-    result.reply,
-    SELECT_OPEN_MARKER,
-    SELECT_CLOSE_MARKER
-  );
-  const decision = parseChiefSelectDecision(rawDecision);
-  const applied = await applySelectDecision(projectRoot, runId, decision);
-  return { ...applied, recovered: false, guiCalls: 1 };
 }
 
 function parseArgs(argv) {
