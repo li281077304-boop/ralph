@@ -1,0 +1,20 @@
+# Economical V3 autonomous single-task loop.
+chief_mode: external
+max_iterations: 8
+timeout_seconds: 1800
+
+worker:
+  agent: codex
+  mode: native_goal
+  model: gpt-5.6-luna
+
+gui_bridge:
+  enabled: true
+  conversation_url: https://chatgpt.com/c/REPLACE_WITH_FIXED_CONVERSATION_ID
+  session: chrome
+  extension_env_file: ~/.config/playwright-mcp/env
+  timeout_ms: 180000
+
+# No max_total_tokens: omitted means no Ralph token-budget cap.
+# Keep the existing commands, protected_paths, forbidden_paths, and
+# gate_allowed_paths for the target repository.

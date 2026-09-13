@@ -32,6 +32,7 @@
     "ralph-chief-v3-select": "./bin/ralph-chief-v3-select.js",
     "ralph-chief-v3-work": "./bin/ralph-chief-v3-work.js",
     "ralph-chief-v3-review": "./bin/ralph-chief-v3-review.js",
+    "ralph-chief-v3-loop": "./bin/ralph-chief-v3-loop.js",
     "ralph-gui-bridge": "./bin/ralph-gui-bridge.js"
   },
   "files": [
