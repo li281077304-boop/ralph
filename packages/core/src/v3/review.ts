@@ -77,6 +77,17 @@ export interface ReviewPreparation {
   handoff: ReviewHandoff;
 }
 
+/**
+ * Resolves the effective Git remote URL used for repository identity checks.
+ * Production callers use the default resolver, which delegates to
+ * `git remote get-url`; tests may inject a deterministic effective URL while
+ * keeping their disposable remotes local.
+ */
+export type ReviewRemoteUrlResolver = (
+  projectRoot: string,
+  remote: string
+) => string;
+
 interface ReviewContext {
   project: ProjectState;
   run: RunState;
@@ -351,14 +362,10 @@ function repoFullName(remoteUrl: string): string {
   return match[1];
 }
 function checkpointRemoteUrl(root: string, remote: string): string {
-  // Ask Git for the effective remote first, then use the configured URL for
-  // identity parsing when an insteadOf rewrite masks the canonical origin.
-  const effective = git(root, ["remote", "get-url", remote]);
-  try {
-    return git(root, ["config", "--get", `remote.${remote}.url`]);
-  } catch {
-    return effective;
-  }
+  // `git remote get-url` is the effective URL Git resolves for this checkout.
+  // Do not substitute the raw remote.<name>.url config value: URL rewriting
+  // (insteadOf) must be part of the identity we review.
+  return git(root, ["remote", "get-url", remote]);
 }
 function clean(root: string): boolean {
   return (
@@ -373,7 +380,8 @@ function remoteHead(root: string, remote: string, branch: string): string {
 
 export async function verifyReviewCheckpoint(
   projectRoot: string,
-  runId: string
+  runId: string,
+  resolveRemoteUrl: ReviewRemoteUrlResolver = checkpointRemoteUrl
 ): Promise<ReviewContext> {
   const run = await loadRunState(runPath(projectRoot, runId));
   const project = await loadProjectStateFromProject(projectRoot);
@@ -477,7 +485,7 @@ export async function verifyReviewCheckpoint(
     throw new Error("Machine Gate evidence is not bound to checkpoint");
   const remoteUrl = String(checkpoint.remote_url ?? "");
   const checkpointRepo = repoFullName(remoteUrl);
-  const currentRemoteUrl = checkpointRemoteUrl(
+  const currentRemoteUrl = resolveRemoteUrl(
     projectRoot,
     String(checkpoint.remote)
   );
@@ -544,9 +552,14 @@ function gateSummary(commands: unknown[]): string {
 
 export async function prepareReviewHandoff(
   projectRoot: string,
-  runId: string
+  runId: string,
+  resolveRemoteUrl: ReviewRemoteUrlResolver = checkpointRemoteUrl
 ): Promise<ReviewPreparation> {
-  const context = await verifyReviewCheckpoint(projectRoot, runId);
+  const context = await verifyReviewCheckpoint(
+    projectRoot,
+    runId,
+    resolveRemoteUrl
+  );
   if (context.run.phase !== "CHIEF_REVIEW" || context.run.status !== "running")
     throw new Error(
       "Review handoff preparation requires CHIEF_REVIEW/running state"
@@ -740,7 +753,8 @@ function transitionFor(
 export async function applyReviewDecision(
   projectRoot: string,
   runId: string,
-  rawDecision?: unknown
+  rawDecision?: unknown,
+  resolveRemoteUrl: ReviewRemoteUrlResolver = checkpointRemoteUrl
 ): Promise<{ runState: RunState; projectState: ProjectState }> {
   const runPathValue = runPath(projectRoot, runId);
   const currentRun = await loadRunState(runPathValue);
@@ -811,7 +825,11 @@ export async function applyReviewDecision(
       projectState: transition.after_project_state,
     };
   }
-  const context = await verifyReviewCheckpoint(projectRoot, runId);
+  const context = await verifyReviewCheckpoint(
+    projectRoot,
+    runId,
+    resolveRemoteUrl
+  );
   const waiting = context.run.waiting_handoff;
   if (!waiting || waiting.kind !== "review")
     throw new Error("Review decision requires WAITING_FOR_CHIEF/review state");

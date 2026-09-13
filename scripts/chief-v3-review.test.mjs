@@ -17,10 +17,16 @@ import {
   REVIEW_CLOSE_MARKER,
   REVIEW_OPEN_MARKER,
   chiefReviewPrompt,
-  runV3ReviewTransport,
+  runV3ReviewTransport as runV3ReviewTransportImpl,
 } from "../apps/cli/bin/ralph-chief-v3-review.js";
 
 const now = "2026-09-13T00:00:00.000Z";
+function runV3ReviewTransport(options) {
+  return runV3ReviewTransportImpl({
+    resolveRemoteUrl: () => "https://github.com/acme/ralph.git",
+    ...options,
+  });
+}
 function git(root, args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 }
@@ -48,17 +54,6 @@ async function seed(gatePassed = true) {
   git(bare, ["init", "-q", "--bare"]);
   git(root, ["remote", "add", "origin", bare]);
   git(root, ["push", "-q", "-u", "origin", "feature/test"]);
-  git(root, [
-    "remote",
-    "set-url",
-    "origin",
-    "https://github.com/acme/ralph.git",
-  ]);
-  git(root, [
-    "config",
-    `url.${bare}.insteadOf`,
-    "https://github.com/acme/ralph.git",
-  ]);
   const runId = `review-${Math.random().toString(16).slice(2)}`;
   await saveProjectStateToProject(root, {
     version: 1,
@@ -126,7 +121,12 @@ async function seed(gatePassed = true) {
   const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
   checkpoint.remote_url = "https://github.com/acme/ralph.git";
   await writeFile(checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`);
-  return { root, bare, runId };
+  return {
+    root,
+    bare,
+    runId,
+    resolveRemoteUrl: () => "https://github.com/acme/ralph.git",
+  };
 }
 function decisionFromMessage(message, overrides = {}) {
   const value = (label) =>
@@ -356,18 +356,48 @@ test("waiting Review revalidates current remote identity before GUI", async () =
     "remote",
     "set-url",
     "origin",
-    "https://github.com/other/ralph.git",
+    "https://github.com/acme/ralph.git",
   ]);
   git(f.root, [
     "config",
     `url.${f.bare}.insteadOf`,
-    "https://github.com/other/ralph.git",
+    "https://github.com/acme/ralph.git",
   ]);
   const calls = { count: 0 };
   await assert.rejects(
     runV3ReviewTransport({
       projectRoot: f.root,
       runId: f.runId,
+      resolveRemoteUrl: () => git(f.root, ["remote", "get-url", "origin"]),
+      transport: transport(calls),
+    }),
+    /github\.com remote|current Git remote repository/
+  );
+  assert.equal(calls.count, 0);
+});
+
+test("effective non-GitHub remote fails closed before GUI", async () => {
+  const f = await seed(true);
+  const calls = { count: 0 };
+  await assert.rejects(
+    runV3ReviewTransportImpl({
+      projectRoot: f.root,
+      runId: f.runId,
+      transport: transport(calls),
+    }),
+    /github.com remote/
+  );
+  assert.equal(calls.count, 0);
+});
+
+test("effective GitHub repository mismatch fails closed before GUI", async () => {
+  const f = await seed(true);
+  const calls = { count: 0 };
+  await assert.rejects(
+    runV3ReviewTransport({
+      projectRoot: f.root,
+      runId: f.runId,
+      resolveRemoteUrl: () => "https://github.com/other/ralph.git",
       transport: transport(calls),
     }),
     /current Git remote repository/

@@ -104,11 +104,11 @@ export function chiefReviewPrompt(preparation) {
   ].join("\n");
 }
 
-async function recoverAcceptedDecision(projectRoot, runId) {
+async function recoverAcceptedDecision(projectRoot, runId, resolveRemoteUrl) {
   const runState = await loadRunState(runStatePath(projectRoot, runId));
   if (!(await exists(reviewDecisionPath(projectRoot, runId, runState.round))))
     return undefined;
-  return applyReviewDecision(projectRoot, runId);
+  return applyReviewDecision(projectRoot, runId, undefined, resolveRemoteUrl);
 }
 
 export async function runV3ReviewTransport(options) {
@@ -120,14 +120,23 @@ export async function runV3ReviewTransport(options) {
     run_state_path: statePath,
   });
   try {
-    const recovered = await recoverAcceptedDecision(projectRoot, runId);
+    const resolveRemoteUrl = options.resolveRemoteUrl;
+    const recovered = await recoverAcceptedDecision(
+      projectRoot,
+      runId,
+      resolveRemoteUrl
+    );
     if (recovered) return { ...recovered, recovered: true, guiCalls: 0 };
     let runState = await loadRunState(statePath);
     let preparation;
     if (runState.phase === "CHIEF_REVIEW" && runState.status === "running")
-      preparation = await prepareReviewHandoff(projectRoot, runId);
+      preparation = await prepareReviewHandoff(
+        projectRoot,
+        runId,
+        resolveRemoteUrl
+      );
     else {
-      await verifyReviewCheckpoint(projectRoot, runId);
+      await verifyReviewCheckpoint(projectRoot, runId, resolveRemoteUrl);
       preparation = await existingReviewHandoff(projectRoot, runState);
       if (!preparation)
         throw new Error(
@@ -151,7 +160,12 @@ export async function runV3ReviewTransport(options) {
       REVIEW_CLOSE_MARKER
     );
     const decision = parseChiefReviewDecision(raw);
-    const applied = await applyReviewDecision(projectRoot, runId, decision);
+    const applied = await applyReviewDecision(
+      projectRoot,
+      runId,
+      decision,
+      resolveRemoteUrl
+    );
     return { ...applied, recovered: false, guiCalls: 1 };
   } finally {
     await releaseActiveWriterLock(projectRoot, lock);

@@ -147,6 +147,7 @@ export {
   type ChiefReviewDecision,
   type ReviewHandoff,
   type ReviewPreparation,
+  type ReviewRemoteUrlResolver,
 } from "./v3/review.js";
 export {
   buildWorkerPrompt,
