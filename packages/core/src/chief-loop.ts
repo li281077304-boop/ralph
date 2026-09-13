@@ -13,8 +13,10 @@ import { join, relative, resolve } from "node:path";
 import type { StageMeta } from "./agents/index.js";
 import {
   parseChiefDecision,
+  parseExternalChiefPlan,
   parseExternalChiefVerdict,
   type ChiefDecision,
+  type ExternalChiefPlan,
   type ExternalChiefVerdict,
 } from "./chief.js";
 import {
@@ -49,14 +51,17 @@ import type { Stage } from "./stages.js";
 
 export type ChiefRunStatus =
   | "PLANNING"
+  | "CHIEF_PLANNING"
   | "WORKING"
   | "MACHINE_CHECK"
   | "CHIEF_REVIEW"
   | "CHIEF_PATCH"
   | "RETURN_TO_WORKER"
+  | "RUNNING_UAT"
   | "WAITING_FOR_CHIEF"
   | "HUMAN_REQUIRED"
   | "PASS"
+  | "STOPPED"
   | "FAILED"
   | "MAX_ITERATIONS"
   | "TOKEN_BUDGET_EXCEEDED";
@@ -96,7 +101,10 @@ export type ChiefRunState = {
     iteration: number;
     handoffHash: string;
     workspaceFingerprint: WorkspaceFingerprint;
+    kind?: "review" | "planning";
   };
+  lastPlan?: ExternalChiefPlan;
+  legacyExternal?: boolean;
 };
 
 export type ChiefAgentRunner = (
@@ -112,6 +120,7 @@ export type ExternalChiefBridgeContext = {
   handoffPath: string;
   state: ChiefRunState;
   config: ChiefLoopConfig;
+  phase?: "planning" | "review";
 };
 
 export type ExternalChiefBridge = (
@@ -259,6 +268,7 @@ export async function runChiefLoop(
         "PASS",
         "FAILED",
         "HUMAN_REQUIRED",
+        "STOPPED",
         "MAX_ITERATIONS",
         "TOKEN_BUDGET_EXCEEDED",
       ].includes(state.status)
@@ -314,101 +324,269 @@ export async function runChiefLoop(
         "请检查 state.json"
       );
     }
-    const external = loadExternalVerdict(
-      options.workspaceDir,
-      runDir,
-      options.verdictPath
-    );
-    if (external.error || !external.verdict) {
-      return finish(
+    if (state.handoff?.kind === "planning") {
+      const planInput = loadExternalPlan(
+        options.workspaceDir,
+        runDir,
+        options.verdictPath
+      );
+      if (planInput.error || !planInput.plan)
+        return finish(
+          state,
+          runDir,
+          "FAILED",
+          planInput.error ?? "External Chief plan is missing",
+          card,
+          "请提供合法的 CHIEF_PLAN.json"
+        );
+      const planError = validateExternalPlan(
         state,
         runDir,
-        "FAILED",
-        external.error ?? "External Chief verdict is missing",
-        card,
-        "请提供合法的 CHIEF_VERDICT.json"
+        planInput.plan,
+        guard.snapshot()
       );
-    }
-    const currentWorkspace = guard.snapshot();
-    const handoffError = validateExternalHandoff(
-      state,
-      runDir,
-      external.verdict,
-      currentWorkspace
-    );
-    if (handoffError) {
-      return finish(
+      if (planError)
+        return finish(
+          state,
+          runDir,
+          "FAILED",
+          planError,
+          card,
+          "请重新生成 planning handoff"
+        );
+      const consumedPlanError = consumeExternalArtifact(
+        planInput.path,
+        runDir,
+        `CHIEF_PLAN.iter-${planInput.plan.iteration}.${planInput.plan.handoff_hash}.json`
+      );
+      if (consumedPlanError)
+        return finish(
+          state,
+          runDir,
+          "FAILED",
+          consumedPlanError,
+          card,
+          "请重新生成一次性的 CHIEF_PLAN.json"
+        );
+      state.lastPlan = planInput.plan;
+      state.workerTask = planInput.plan.worker_task;
+      state.handoff = undefined;
+      if (planInput.plan.action === "HUMAN_REQUIRED")
+        return human(state, runDir, planToDecision(planInput.plan), card);
+      if (planInput.plan.action === "STOP_NO_HIGH_VALUE_WORK")
+        return finish(
+          state,
+          runDir,
+          "STOPPED",
+          planInput.plan.why_now,
+          card,
+          "没有需要继续自动施工的高价值任务"
+        );
+      state.status =
+        planInput.plan.action === "RUN_INTEGRATION_UAT"
+          ? "RUNNING_UAT"
+          : "WORKING";
+      state.reason = planInput.plan.why_now;
+      persist();
+      startIteration = state.iteration + 1;
+      card(
+        "尚未执行",
+        planInput.plan.why_now,
+        planInput.plan.risk,
+        "",
+        "进入下一轮 Worker"
+      );
+    } else {
+      const external = loadExternalVerdict(
+        options.workspaceDir,
+        runDir,
+        options.verdictPath
+      );
+      if (external.error || !external.verdict) {
+        return finish(
+          state,
+          runDir,
+          "FAILED",
+          external.error ?? "External Chief verdict is missing",
+          card,
+          "请提供合法的 CHIEF_VERDICT.json"
+        );
+      }
+      const currentWorkspace = guard.snapshot();
+      const handoffError = validateExternalHandoff(
         state,
         runDir,
-        "FAILED",
-        handoffError,
-        card,
-        "请重新生成 handoff 并重新审计"
+        external.verdict,
+        currentWorkspace
       );
-    }
-    const decision = external.verdict;
-    if (
-      decision.verdict === "PASS" &&
-      (!state.previousGate?.passed || !decision.previousGate?.passed)
-    ) {
-      return finish(
-        state,
+      if (handoffError) {
+        return finish(
+          state,
+          runDir,
+          "FAILED",
+          handoffError,
+          card,
+          "请重新生成 handoff 并重新审计"
+        );
+      }
+      const decision = external.verdict;
+      if (
+        decision.verdict === "PASS" &&
+        (!state.previousGate?.passed || !decision.previousGate?.passed)
+      ) {
+        return finish(
+          state,
+          runDir,
+          "FAILED",
+          "External Chief PASS 被拒绝：previousGate 不存在或未通过",
+          card,
+          "请根据最新 Machine Gate 结果重新提交 verdict"
+        );
+      }
+      const consumedError = consumeExternalVerdict(
+        external.path,
         runDir,
-        "FAILED",
-        "External Chief PASS 被拒绝：previousGate 不存在或未通过",
-        card,
-        "请根据最新 Machine Gate 结果重新提交 verdict"
+        decision
       );
+      if (consumedError) {
+        return finish(
+          state,
+          runDir,
+          "FAILED",
+          consumedError,
+          card,
+          "请重新生成并提交一次性的 CHIEF_VERDICT.json"
+        );
+      }
+      state.handoff = undefined;
+      state.previousDecision = externalToChiefDecision(decision);
+      if (decision.verdict === "PASS") {
+        if (state.legacyExternal) {
+          return finish(
+            state,
+            runDir,
+            "PASS",
+            decision.summary,
+            card,
+            "任务完成"
+          );
+        } else if (config.guiBridge?.enabled && options.externalChiefBridge) {
+          const planning = await externalPlanning({
+            options,
+            runDir,
+            iterationsDir,
+            state,
+            config,
+            guard,
+            card,
+            persist,
+            nextIteration: state.iteration,
+          });
+          if (planning.kind === "waiting") return { runDir, state };
+          if (planning.kind === "finished") return planning.result;
+          state.lastPlan = planning.plan;
+          state.workerTask = planning.plan.worker_task;
+          state.handoff = undefined;
+          if (planning.plan.action === "HUMAN_REQUIRED")
+            return human(state, runDir, planToDecision(planning.plan), card);
+          if (planning.plan.action === "STOP_NO_HIGH_VALUE_WORK")
+            return finish(
+              state,
+              runDir,
+              "STOPPED",
+              planning.plan.why_now,
+              card,
+              "没有需要继续自动施工的高价值任务"
+            );
+          state.status =
+            planning.plan.action === "RUN_INTEGRATION_UAT"
+              ? "RUNNING_UAT"
+              : "RETURN_TO_WORKER";
+          state.reason = planning.plan.why_now;
+          persist();
+          startIteration = state.iteration + 1;
+          card(
+            "PASS",
+            decision.summary,
+            planning.plan.risk,
+            "",
+            "进入总工规划的下一轮 Worker"
+          );
+        } else {
+          return finish(
+            state,
+            runDir,
+            "PASS",
+            decision.summary,
+            card,
+            "任务完成"
+          );
+        }
+      } else {
+        if (decision.verdict === "HUMAN_REQUIRED")
+          return human(state, runDir, externalToChiefDecision(decision), card);
+        state.workerTask = decision.worker_task;
+        startIteration = state.iteration + 1;
+        state.status = "RETURN_TO_WORKER";
+        state.reason = decision.summary;
+        persist();
+        card(
+          "沿用上次机器结果",
+          decision.summary,
+          "",
+          "",
+          "进入下一轮 Worker 施工"
+        );
+      }
     }
-    const consumedError = consumeExternalVerdict(
-      external.path,
-      runDir,
-      decision
-    );
-    if (consumedError) {
-      return finish(
-        state,
-        runDir,
-        "FAILED",
-        consumedError,
-        card,
-        "请重新生成并提交一次性的 CHIEF_VERDICT.json"
-      );
-    }
-    state.handoff = undefined;
-    state.previousDecision = externalToChiefDecision(decision);
-    if (decision.verdict === "PASS") {
-      return finish(state, runDir, "PASS", decision.summary, card, "任务完成");
-    }
-    if (decision.verdict === "HUMAN_REQUIRED")
-      return human(state, runDir, externalToChiefDecision(decision), card);
-    state.workerTask = decision.worker_task;
-    startIteration = state.iteration + 1;
-    state.status = "RETURN_TO_WORKER";
-    state.reason = decision.summary;
-    persist();
-    card(
-      "沿用上次机器结果",
-      decision.summary,
-      "",
-      "",
-      "进入下一轮 Worker 施工"
-    );
   } else if (config.chiefMode === "external") {
-    // The original TASK is the only available Worker instruction before an
-    // external Chief has reviewed anything. This keeps the useful first
-    // Worker/Gate pass while ensuring no local Chief model is called.
-    state.workerTask = config.task;
-    state.status = "WORKING";
-    state.reason = "external Chief mode: initial task dispatched to Worker";
-    persist();
-    card(
-      "尚未执行",
-      "外部总工模式不调用本地 Chief，首轮直接执行原始 TASK",
-      "",
-      "",
-      "进入 Worker 施工"
-    );
+    // V2 starts external runs with a real Planning call. Keep the legacy
+    // manual external mode (no bridge configured) compatible: it still
+    // dispatches TASK directly and waits for the first review handoff.
+    if (config.guiBridge?.enabled && options.externalChiefBridge) {
+      const planning = await externalPlanning({
+        options,
+        runDir,
+        iterationsDir,
+        state,
+        config,
+        guard,
+        card,
+        persist,
+      });
+      if (planning.kind === "waiting") return { runDir, state };
+      if (planning.kind === "finished") return planning.result;
+      state.workerTask = planning.plan.worker_task;
+      state.lastPlan = planning.plan;
+      state.handoff = undefined;
+      state.status =
+        planning.plan.action === "RUN_INTEGRATION_UAT"
+          ? "RUNNING_UAT"
+          : "WORKING";
+      state.reason = planning.plan.why_now;
+      persist();
+      card(
+        "尚未执行",
+        planning.plan.why_now,
+        planning.plan.risk,
+        "",
+        planning.plan.action === "RUN_INTEGRATION_UAT"
+          ? "进入集成 UAT"
+          : "进入 Worker 施工"
+      );
+    } else {
+      state.workerTask = config.task;
+      state.status = "WORKING";
+      state.reason = "external Chief mode: initial task dispatched to Worker";
+      persist();
+      card(
+        "尚未执行",
+        "外部总工模式等待首轮审计；未配置 GUI Bridge 时沿用原始 TASK",
+        "",
+        "",
+        "进入 Worker 施工"
+      );
+    }
   } else {
     const planningBefore = guard.snapshot();
     const planningStarted = Date.now();
@@ -639,6 +817,23 @@ export async function runChiefLoop(
       );
     }
 
+    if (state.lastPlan?.action === "RUN_INTEGRATION_UAT") {
+      atomicWrite(
+        join(runDir, "UI_UAT.md"),
+        [
+          "# Integration UAT",
+          "",
+          `scope: ${state.lastPlan.task_title}`,
+          `iteration: ${iteration}`,
+          "",
+          "Worker completed the planned integration-UAT slice.",
+          `Machine Gate: ${gate.passed ? "PASS" : "FAIL"}`,
+          "Detailed browser, console, and output evidence remains in the iteration artifacts.",
+          "",
+        ].join("\n")
+      );
+    }
+
     if (config.chiefMode === "external") {
       state.status = "WAITING_FOR_CHIEF";
       state.reason = gate.passed
@@ -661,6 +856,7 @@ export async function runChiefLoop(
         iteration: state.iteration,
         handoffHash: handoff.handoffHash,
         workspaceFingerprint: handoff.workspaceFingerprint,
+        kind: "review",
       };
       persist();
       card(
@@ -679,6 +875,7 @@ export async function runChiefLoop(
           handoffPath: join(runDir, "CHIEF_HANDOFF.md"),
           state,
           config,
+          phase: "review",
         });
         if (bridge.error || !bridge.verdictPath) {
           const error = bridge.error ?? "GUI Bridge did not produce a verdict";
@@ -1119,6 +1316,371 @@ function normalizeConfig(
         input.worker?.reasoning_effort ?? base.worker.reasoning_effort,
     },
     guiBridge: input.guiBridge ?? base.gui_bridge,
+  };
+}
+
+type ExternalPlanningResult =
+  | { kind: "plan"; plan: ExternalChiefPlan }
+  | { kind: "waiting" }
+  | { kind: "finished"; result: ChiefRunResult };
+
+async function externalPlanning(args: {
+  options: ChiefLoopOptions;
+  runDir: string;
+  iterationsDir: string;
+  state: ChiefRunState;
+  config: ChiefLoopConfig;
+  guard: GitGuard;
+  card: (
+    machine: string,
+    chief: string,
+    risk: string,
+    need: string,
+    next: string
+  ) => void;
+  persist: () => void;
+  nextIteration?: number;
+}): Promise<ExternalPlanningResult> {
+  const iteration = args.nextIteration ?? args.state.iteration;
+  args.state.iteration = iteration;
+  args.state.status = "CHIEF_PLANNING";
+  const iterationDir = join(
+    args.iterationsDir,
+    String(iteration).padStart(2, "0")
+  );
+  mkdirSync(iterationDir, { recursive: true });
+  const handoff = writePlanningHandoff({
+    runDir: args.runDir,
+    workspaceDir: args.options.workspaceDir,
+    config: args.config,
+    state: args.state,
+    current: args.guard.snapshot(),
+    iterationDir,
+  });
+  args.state.handoff = {
+    runId: args.state.runId,
+    iteration,
+    handoffHash: handoff.handoffHash,
+    workspaceFingerprint: handoff.workspaceFingerprint,
+    kind: "planning",
+  };
+  args.state.reason = "等待外部总工先决定当前最高价值任务";
+  args.persist();
+  args.card(
+    "尚未执行",
+    "外部总工正在进行项目规划",
+    "",
+    "请提供 CHIEF_PLAN.json",
+    "等待外部总工规划"
+  );
+  const bridgeFn = args.options.externalChiefBridge;
+  if (!args.config.guiBridge?.enabled || !bridgeFn) {
+    args.state.status = "WAITING_FOR_CHIEF";
+    args.persist();
+    return { kind: "waiting" };
+  }
+  const bridge = await bridgeFn({
+    workspaceDir: args.options.workspaceDir,
+    runDir: args.runDir,
+    handoffPath: join(args.runDir, "CHIEF_HANDOFF.md"),
+    state: args.state,
+    config: args.config,
+    phase: "planning",
+  });
+  if (bridge.error || !bridge.verdictPath) {
+    const error =
+      bridge.error ?? "GUI Bridge did not produce a planning decision";
+    atomicWrite(
+      join(args.runDir, "gui-bridge-error.json"),
+      `${JSON.stringify({ error, phase: "planning", at: new Date().toISOString() }, null, 2)}\n`
+    );
+    args.state.reason = `GUI Bridge failed closed: ${error}`;
+    args.state.status = "WAITING_FOR_CHIEF";
+    args.persist();
+    return { kind: "waiting" };
+  }
+  const input = loadExternalPlan(
+    args.options.workspaceDir,
+    args.runDir,
+    bridge.verdictPath
+  );
+  if (input.error || !input.plan) {
+    // Backward compatibility for pre-V2 custom bridge callbacks. The shipped
+    // GUI bridge always returns CHIEF_PLAN_JSON during planning; this branch
+    // only accepts an explicitly valid V1 verdict and never guesses prose.
+    const legacy = loadExternalVerdict(
+      args.options.workspaceDir,
+      args.runDir,
+      bridge.verdictPath
+    );
+    if (legacy.verdict) {
+      const consumedLegacy = consumeExternalArtifact(
+        legacy.path,
+        args.runDir,
+        `CHIEF_VERDICT.legacy-plan-${args.state.iteration}.${legacy.verdict.handoff_hash}.json`
+      );
+      if (consumedLegacy) {
+        return {
+          kind: "finished",
+          result: finish(
+            args.state,
+            args.runDir,
+            "FAILED",
+            consumedLegacy,
+            args.card,
+            "请重新生成一次性 external verdict"
+          ),
+        };
+      }
+      args.state.legacyExternal = true;
+      return {
+        kind: "plan",
+        plan: {
+          action: "CONTINUE_DEVELOPMENT",
+          task_title: "legacy external task",
+          why_now: "兼容已存在的 V1 bridge 回调",
+          evidence: "V1 strict verdict",
+          why_not_other_tasks: "兼容性路径",
+          worker_task: args.config.task,
+          do_not_do: "",
+          acceptance: "沿用现有 Machine Gate",
+          risk: "",
+          uat_decision: "",
+          run_id: args.state.runId,
+          iteration: args.state.iteration,
+          handoff_hash: args.state.handoff?.handoffHash ?? "",
+        },
+      };
+    }
+    args.state.reason = input.error ?? "External Chief plan is invalid";
+    args.persist();
+    return {
+      kind: "finished",
+      result: finish(
+        args.state,
+        args.runDir,
+        "FAILED",
+        args.state.reason,
+        args.card,
+        "请修正 CHIEF_PLAN.json"
+      ),
+    };
+  }
+  const error = validateExternalPlan(
+    args.state,
+    args.runDir,
+    input.plan,
+    args.guard.snapshot()
+  );
+  if (error) {
+    return {
+      kind: "finished",
+      result: finish(
+        args.state,
+        args.runDir,
+        "FAILED",
+        error,
+        args.card,
+        "请重新生成 planning handoff"
+      ),
+    };
+  }
+  const consumed = consumeExternalArtifact(
+    input.path,
+    args.runDir,
+    `CHIEF_PLAN.iter-${input.plan.iteration}.${input.plan.handoff_hash}.json`
+  );
+  if (consumed) {
+    return {
+      kind: "finished",
+      result: finish(
+        args.state,
+        args.runDir,
+        "FAILED",
+        consumed,
+        args.card,
+        "请重新生成一次性的 CHIEF_PLAN.json"
+      ),
+    };
+  }
+  atomicWrite(
+    join(iterationDir, "chief_plan.json"),
+    `${JSON.stringify(input.plan, null, 2)}\n`
+  );
+  atomicWrite(join(iterationDir, "chief_plan.md"), renderPlan(input.plan));
+  return { kind: "plan", plan: input.plan };
+}
+
+function planToDecision(plan: ExternalChiefPlan): ChiefDecision {
+  return {
+    verdict: "HUMAN_REQUIRED",
+    summary: plan.why_now,
+    reasoning_summary: plan.evidence,
+    worker_task: "",
+    human_question: plan.why_now,
+    human_options: [],
+    risk: plan.risk,
+    next_step: plan.uat_decision,
+  };
+}
+
+function renderPlan(plan: ExternalChiefPlan): string {
+  return (
+    [
+      `ACTION = ${plan.action}`,
+      `TASK_TITLE = ${plan.task_title}`,
+      `WHY_NOW = ${plan.why_now}`,
+      `EVIDENCE = ${plan.evidence}`,
+      `WHY_NOT_OTHER_TASKS = ${plan.why_not_other_tasks}`,
+      `WORKER_TASK = ${plan.worker_task}`,
+      `DO_NOT_DO = ${plan.do_not_do}`,
+      `ACCEPTANCE = ${plan.acceptance}`,
+      `RISK = ${plan.risk}`,
+      `UAT_DECISION = ${plan.uat_decision}`,
+    ].join("\n") + "\n"
+  );
+}
+
+function loadExternalPlan(
+  workspaceDir: string,
+  runDir: string,
+  explicitPath?: string
+): { plan?: ExternalChiefPlan; path?: string; error?: string } {
+  const candidates = explicitPath
+    ? [resolve(explicitPath)]
+    : [join(runDir, "CHIEF_PLAN.json"), join(workspaceDir, "CHIEF_PLAN.json")];
+  const path = candidates.find((candidate) => existsSync(candidate));
+  if (!path)
+    return {
+      error: `CHIEF_PLAN.json not found; expected ${candidates.join(" or ")}`,
+    };
+  try {
+    const plan = parseExternalChiefPlan(readFileSync(path, "utf8"));
+    return plan
+      ? { plan, path }
+      : {
+          error: `CHIEF_PLAN.json is not valid external Chief planning JSON: ${path}`,
+        };
+  } catch (error) {
+    return {
+      error: `Cannot read external Chief plan ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+function validateExternalPlan(
+  state: ChiefRunState,
+  runDir: string,
+  plan: ExternalChiefPlan,
+  current: RepoSnapshot
+): string | undefined {
+  const handoff = state.handoff;
+  if (!handoff || handoff.kind !== "planning")
+    return "External Chief planning handoff metadata is missing";
+  if (
+    plan.run_id !== state.runId ||
+    plan.iteration !== handoff.iteration ||
+    plan.handoff_hash !== handoff.handoffHash
+  )
+    return "External Chief plan identity does not match the waiting planning handoff";
+  const handoffPath = join(runDir, "CHIEF_HANDOFF.md");
+  if (!existsSync(handoffPath))
+    return `CHIEF_HANDOFF.md not found: ${handoffPath}`;
+  const handoffText = readFileSync(handoffPath, "utf8");
+  const canonical = handoffText.replace(
+    /\n\nhandoff_hash: [a-f0-9]{64}\n?$/,
+    "\n"
+  );
+  if (
+    createHash("sha256").update(canonical).digest("hex") !== handoff.handoffHash
+  )
+    return "CHIEF_HANDOFF.md has changed since planning WAITING_FOR_CHIEF";
+  if (
+    JSON.stringify(workspaceFingerprint(current)) !==
+    JSON.stringify(handoff.workspaceFingerprint)
+  )
+    return "workspace changed since planning WAITING_FOR_CHIEF; regenerate planning handoff";
+  return undefined;
+}
+
+function consumeExternalArtifact(
+  path: string | undefined,
+  runDir: string,
+  archiveName: string
+): string | undefined {
+  if (!path) return "External Chief artifact path is missing";
+  const consumedDir = join(runDir, "consumed");
+  const consumedPath = join(consumedDir, archiveName);
+  if (existsSync(consumedPath))
+    return `External Chief artifact was already consumed: ${archiveName}`;
+  try {
+    mkdirSync(consumedDir, { recursive: true });
+    try {
+      renameSync(path, consumedPath);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !("code" in error) ||
+        error.code !== "EXDEV"
+      )
+        throw error;
+      copyFileSync(path, consumedPath);
+      unlinkSync(path);
+    }
+    return undefined;
+  } catch (error) {
+    return `Cannot consume external Chief artifact ${path}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function writePlanningHandoff(args: {
+  runDir: string;
+  workspaceDir: string;
+  config: ChiefLoopConfig;
+  state: ChiefRunState;
+  current: RepoSnapshot;
+  iterationDir: string;
+}): { handoffHash: string; workspaceFingerprint: WorkspaceFingerprint } {
+  const relativePath = (path: string) =>
+    relative(args.workspaceDir, path).replaceAll("\\", "/");
+  const canonical = [
+    "# CHIEF_HANDOFF",
+    "",
+    "这是规划阶段 handoff；请先决定下一步最高价值动作。",
+    "",
+    "## 【当前目标】",
+    args.config.task.trim() || "（任务内容为空）",
+    "",
+    "## 【当前状态】",
+    `CHIEF_PLANNING · iteration ${args.state.iteration}/${args.config.maxIterations}`,
+    `run_id: ${args.state.runId}`,
+    `iteration: ${args.state.iteration}`,
+    "",
+    "## 【Git 信息】",
+    `branch: ${args.current.branch}`,
+    `HEAD: ${args.current.head}`,
+    `status: ${args.current.status || "clean"}`,
+    `diff stat: ${args.current.diffStat || "(clean)"}`,
+    "",
+    "## 【要求】",
+    "请返回严格 CHIEF_PLAN_JSON，字段 action/task_title/why_now/evidence/why_not_other_tasks/worker_task/do_not_do/acceptance/risk/uat_decision/run_id/iteration/handoff_hash。",
+    "可选 action：CONTINUE_DEVELOPMENT、RUN_INTEGRATION_UAT、HUMAN_REQUIRED、STOP_NO_HIGH_VALUE_WORK。",
+    "",
+    "## 【原始证据位置】",
+    `- run directory: ${relativePath(args.runDir)}`,
+    `- state: ${relativePath(join(args.runDir, "state.json"))}`,
+    `- iteration artifacts: ${relativePath(args.iterationDir)}`,
+  ].join("\n");
+  const handoffHash = createHash("sha256")
+    .update(`${canonical}\n`)
+    .digest("hex");
+  atomicWrite(
+    join(args.runDir, "CHIEF_HANDOFF.md"),
+    `${canonical}\n\nhandoff_hash: ${handoffHash}\n`
+  );
+  return {
+    handoffHash,
+    workspaceFingerprint: workspaceFingerprint(args.current),
   };
 }
 

@@ -470,7 +470,7 @@ describe("external Chief mode", () => {
       },
     });
     expect(result.state.status).toBe("PASS");
-    expect(bridgeCalls).toBe(1);
+    expect(bridgeCalls).toBe(2);
     expect(calls).toEqual(["worker"]);
   });
 
@@ -515,7 +515,7 @@ describe("external Chief mode", () => {
     });
     expect(result.state.status).toBe("PASS");
     expect(bridgeCalls).toBe(2);
-    expect(workerRuns).toBe(2);
+    expect(workerRuns).toBe(1);
   });
 
   it("stays WAITING and records a GUI bridge failure without fallback", async () => {
@@ -542,7 +542,7 @@ describe("external Chief mode", () => {
     });
     expect(result.state.status).toBe("WAITING_FOR_CHIEF");
     expect(result.state.reason).toContain("GUI Bridge failed closed");
-    expect(calls).toBe(1);
+    expect(calls).toBe(0);
     expect(
       readFileSync(join(result.runDir, "gui-bridge-error.json"), "utf8")
     ).toContain("CONVERSATION_NOT_FOUND");

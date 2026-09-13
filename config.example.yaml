@@ -1,7 +1,8 @@
 # Copy to the target repository as ACCEPTANCE.yaml and edit the commands.
 chief_mode: codex # codex = autonomous local Chief; external = wait for ChatGPT verdict
 max_iterations: 6
-max_total_tokens: 300000
+# Optional; omit for an unlimited total token budget.
+# max_total_tokens: 300000
 timeout_seconds: 1800
 
 commands:

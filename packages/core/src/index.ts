@@ -13,9 +13,12 @@ export {
 } from "./chief-loop.js";
 export {
   parseChiefDecision,
+  parseExternalChiefPlan,
   parseExternalChiefVerdict,
   type ChiefDecision,
   type ChiefVerdict,
+  type ExternalChiefPlan,
+  type ExternalChiefPlanAction,
   type ExternalChiefVerdict,
 } from "./chief.js";
 export {

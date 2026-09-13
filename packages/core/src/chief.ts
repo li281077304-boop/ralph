@@ -26,6 +26,112 @@ export type ExternalChiefVerdict = {
   previousGate?: MachineGateResult;
 };
 
+export type ExternalChiefPlanAction =
+  | "CONTINUE_DEVELOPMENT"
+  | "RUN_INTEGRATION_UAT"
+  | "HUMAN_REQUIRED"
+  | "STOP_NO_HIGH_VALUE_WORK";
+
+export type ExternalChiefPlan = {
+  action: ExternalChiefPlanAction;
+  task_title: string;
+  why_now: string;
+  evidence: string;
+  why_not_other_tasks: string;
+  worker_task: string;
+  do_not_do: string;
+  acceptance: string;
+  risk: string;
+  uat_decision: string;
+  run_id: string;
+  iteration: number;
+  handoff_hash: string;
+};
+
+/** Strict machine contract for an external Chief planning decision. */
+export function parseExternalChiefPlan(
+  text: string
+): ExternalChiefPlan | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text.trim());
+  } catch {
+    return undefined;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const record = value as Record<string, unknown>;
+  const expectedKeys = new Set([
+    "action",
+    "task_title",
+    "why_now",
+    "evidence",
+    "why_not_other_tasks",
+    "worker_task",
+    "do_not_do",
+    "acceptance",
+    "risk",
+    "uat_decision",
+    "run_id",
+    "iteration",
+    "handoff_hash",
+  ]);
+  if (Object.keys(record).some((key) => !expectedKeys.has(key)))
+    return undefined;
+  const actions = new Set<ExternalChiefPlanAction>([
+    "CONTINUE_DEVELOPMENT",
+    "RUN_INTEGRATION_UAT",
+    "HUMAN_REQUIRED",
+    "STOP_NO_HIGH_VALUE_WORK",
+  ]);
+  if (
+    typeof record.action !== "string" ||
+    !actions.has(record.action as ExternalChiefPlanAction)
+  )
+    return undefined;
+  const strings = [
+    "task_title",
+    "why_now",
+    "evidence",
+    "why_not_other_tasks",
+    "worker_task",
+    "do_not_do",
+    "acceptance",
+    "risk",
+    "uat_decision",
+    "run_id",
+    "handoff_hash",
+  ];
+  if (!strings.every((key) => typeof record[key] === "string"))
+    return undefined;
+  if (!Number.isInteger(record.iteration) || (record.iteration as number) < 0)
+    return undefined;
+  if (!/^[a-f0-9]{64}$/.test(record.handoff_hash as string)) return undefined;
+  if (
+    (record.action === "CONTINUE_DEVELOPMENT" ||
+      record.action === "RUN_INTEGRATION_UAT") &&
+    !(record.worker_task as string).trim()
+  )
+    return undefined;
+  if (record.action === "HUMAN_REQUIRED" && !(record.why_now as string).trim())
+    return undefined;
+  return {
+    action: record.action as ExternalChiefPlanAction,
+    task_title: record.task_title as string,
+    why_now: record.why_now as string,
+    evidence: record.evidence as string,
+    why_not_other_tasks: record.why_not_other_tasks as string,
+    worker_task: record.worker_task as string,
+    do_not_do: record.do_not_do as string,
+    acceptance: record.acceptance as string,
+    risk: record.risk as string,
+    uat_decision: record.uat_decision as string,
+    run_id: record.run_id as string,
+    iteration: record.iteration as number,
+    handoff_hash: record.handoff_hash as string,
+  };
+}
+
 /**
  * Parse the Chief's final message as the protocol, never as free-form prose.
  * The adapter may return a little surrounding whitespace, but any prose,
@@ -149,7 +255,7 @@ export function parseExternalChiefVerdict(
     typeof record.next_step !== "string" ||
     typeof record.run_id !== "string" ||
     !Number.isInteger(record.iteration) ||
-    (record.iteration as number) < 1 ||
+    (record.iteration as number) < 0 ||
     typeof record.handoff_hash !== "string" ||
     !/^[a-f0-9]{64}$/.test(record.handoff_hash) ||
     !Array.isArray(record.human_options) ||

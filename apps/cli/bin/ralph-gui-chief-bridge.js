@@ -45,7 +45,8 @@ export async function runExternalChiefGuiBridge(config, context) {
     config.conversation_url,
     message,
     identity,
-    timeoutMs
+    timeoutMs,
+    context.phase ?? "review"
   );
   await ensureConversationTab(session, config.conversation_url, env);
   const result = await runPlaywrightCli(session, code, env, timeoutMs + 30_000);
@@ -116,6 +117,39 @@ function tabIndex(result, conversationUrl) {
 export function chiefPrompt(context, handoff) {
   const state = context.state;
   const fingerprint = state.handoff?.workspaceFingerprint ?? {};
+  if (context.phase === "planning") {
+    return [
+      "你是 Ralph 的外部 Chief Engineer（外部总工），现在只做项目规划。",
+      "请重新审计当前项目证据，选择当前最高价值且无需猜测的下一步。不要修改代码，不要输出解释性 prose。",
+      "",
+      `run_id: ${state.runId}`,
+      `iteration: ${state.iteration}`,
+      `handoff_hash: ${state.handoff?.handoffHash ?? ""}`,
+      `workspace_fingerprint: ${JSON.stringify(fingerprint)}`,
+      "",
+      "只返回严格机器区块：",
+      "<<<CHIEF_PLAN_JSON>>>",
+      "{",
+      '  "action": "CONTINUE_DEVELOPMENT | RUN_INTEGRATION_UAT | HUMAN_REQUIRED | STOP_NO_HIGH_VALUE_WORK",',
+      '  "task_title": "...",',
+      '  "why_now": "...",',
+      '  "evidence": "...",',
+      '  "why_not_other_tasks": "...",',
+      '  "worker_task": "...",',
+      '  "do_not_do": "...",',
+      '  "acceptance": "...",',
+      '  "risk": "...",',
+      '  "uat_decision": "...",',
+      `  "run_id": "${state.runId}",`,
+      `  "iteration": ${state.iteration},`,
+      `  "handoff_hash": "${state.handoff?.handoffHash ?? ""}"`,
+      "}",
+      "<<<END_CHIEF_PLAN_JSON>>>",
+      "",
+      "以下是本次规划 handoff：",
+      handoff,
+    ].join("\n");
+  }
   return [
     "你是 Ralph 的外部 Chief Engineer（外部总工）。",
     "你负责审计 Worker 施工结果、Machine Gate 证据和 Git diff，并决定下一步。",
@@ -175,12 +209,19 @@ function expandHome(path) {
     : path;
 }
 
-function extensionRoundtripCode(conversationUrl, message, identity, timeoutMs) {
+function extensionRoundtripCode(
+  conversationUrl,
+  message,
+  identity,
+  timeoutMs,
+  phase = "review"
+) {
   return `(async page => {
     const expectedUrl = ${JSON.stringify(conversationUrl)};
     const message = ${JSON.stringify(message)};
     const identity = ${JSON.stringify(identity)};
     const deadline = Date.now() + ${timeoutMs};
+    const closingMarker = ${JSON.stringify(phase === "planning" ? "<<<END_CHIEF_PLAN_JSON>>>" : END_MARKER)};
     if (!page.url().startsWith(expectedUrl))
       throw new Error("CONVERSATION_NOT_FOUND: " + page.url());
     let input;
@@ -205,7 +246,7 @@ function extensionRoundtripCode(conversationUrl, message, identity, timeoutMs) {
           try { text = await assistant.nth(index).innerText(); } catch { continue; }
           if (text.includes(identity)) {
             reply = text;
-            if (text.includes(${JSON.stringify(END_MARKER)})) return { reply };
+            if (text.includes(closingMarker)) return { reply };
           }
         }
       }

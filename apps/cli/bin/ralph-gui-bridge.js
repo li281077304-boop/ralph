@@ -74,9 +74,9 @@ export function createNonce(random = Math.random) {
   return value;
 }
 
-export function extractMarkedJson(text) {
+export function extractMarkedJson(text, marker = "CHIEF_VERDICT_JSON") {
   const match = text.match(
-    /<<<CHIEF_VERDICT_JSON>>>\s*([\s\S]*?)\s*<<<END_CHIEF_VERDICT_JSON>>>/
+    new RegExp(`<<<${marker}>>>\\s*([\\s\\S]*?)\\s*<<<END_${marker}>>>`)
   );
   if (!match)
     throw new GuiBridgeError(ERROR_CODES.MARKER, "Reply marker is missing");
