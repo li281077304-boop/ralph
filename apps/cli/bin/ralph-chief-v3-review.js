@@ -146,7 +146,12 @@ export async function runV3ReviewTransport(options) {
     runState = preparation.runState;
     const transport =
       options.transport ??
-      ((request) => runExternalChiefGuiRoundtrip(options.guiConfig, request));
+      ((request) =>
+        runExternalChiefGuiRoundtrip(options.guiConfig, {
+          ...request,
+          projectRoot,
+          runId,
+        }));
     const result = await transport({
       identity: preparation.handoff.handoff_hash,
       message: chiefReviewPrompt(preparation),

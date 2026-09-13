@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   classifyBridgeError,
   extensionRoundtripCode,
+  realConversationUrl,
+  tabEntries,
 } from "../apps/cli/bin/ralph-gui-chief-bridge.js";
 
 const URL = "https://chatgpt.com/c/fixed-chief";
@@ -124,6 +126,7 @@ test("current composer selector submits exactly once", async () => {
   const result = await execute(page);
   assert.equal(page.sendCount, 1);
   assert.match(result.reply, /unique-1/);
+  assert.equal(result.url, URL);
 });
 
 test("legacy textarea selector remains supported", async () => {
@@ -169,5 +172,35 @@ test("diagnostic error classes remain explicit", () => {
   assert.equal(
     classifyBridgeError("SEND_FAILED: diagnostics", undefined),
     "SEND_FAILED"
+  );
+});
+
+test("placeholder conversation URLs are rejected while real ChatGPT URLs are accepted", () => {
+  assert.equal(
+    realConversationUrl(
+      "https://chatgpt.com/c/REPLACE_WITH_FIXED_CHIEF_CONVERSATION"
+    ),
+    undefined
+  );
+  assert.equal(
+    realConversationUrl("https://chatgpt.com/c/real-chief"),
+    "https://chatgpt.com/c/real-chief"
+  );
+  assert.equal(
+    realConversationUrl("https://example.com/c/real-chief"),
+    undefined
+  );
+});
+
+test("tab discovery parses changing tab indices without relying on title", () => {
+  assert.deepEqual(
+    tabEntries(
+      "- 7: (current) [请稍候…](https://chatgpt.com/c/real-chief)\n" +
+        "- 12: [Other](https://chatgpt.com/)"
+    ),
+    [
+      { index: 7, url: "https://chatgpt.com/c/real-chief" },
+      { index: 12, url: "https://chatgpt.com/" },
+    ]
   );
 });

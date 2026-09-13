@@ -14,7 +14,7 @@ export type ChiefAgentConfig = {
 
 export type ChiefGuiBridgeConfig = {
   enabled: boolean;
-  conversation_url: string;
+  conversation_url?: string;
   session?: string;
   extension_env_file?: string;
   timeout_ms?: number;
@@ -176,8 +176,13 @@ function guiBridgeConfig(value: unknown): ChiefGuiBridgeConfig | undefined {
   const record = value as Record<string, unknown>;
   if (typeof record.enabled !== "boolean")
     throw new Error("gui_bridge.enabled must be a boolean");
-  if (typeof record.conversation_url !== "string" || !record.conversation_url)
-    throw new Error("gui_bridge.conversation_url must be a non-empty string");
+  if (
+    record.conversation_url !== undefined &&
+    (typeof record.conversation_url !== "string" || !record.conversation_url)
+  )
+    throw new Error(
+      "gui_bridge.conversation_url must be a non-empty string when provided"
+    );
   if (record.session !== undefined && typeof record.session !== "string")
     throw new Error("gui_bridge.session must be a string");
   if (
@@ -193,7 +198,7 @@ function guiBridgeConfig(value: unknown): ChiefGuiBridgeConfig | undefined {
     throw new Error("gui_bridge.timeout_ms must be a positive integer");
   return {
     enabled: record.enabled,
-    conversation_url: record.conversation_url,
+    conversation_url: (record.conversation_url as string | undefined) ?? "auto",
     session: record.session,
     extension_env_file: record.extension_env_file,
     timeout_ms: timeout,

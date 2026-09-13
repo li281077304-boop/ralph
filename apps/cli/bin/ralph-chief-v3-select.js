@@ -149,7 +149,12 @@ export async function runV3SelectTransport(options) {
     };
     const transport =
       options.transport ??
-      ((value) => runExternalChiefGuiRoundtrip(options.guiConfig, value));
+      ((value) =>
+        runExternalChiefGuiRoundtrip(options.guiConfig, {
+          ...value,
+          projectRoot,
+          runId,
+        }));
     const result = await transport(request);
     if (!result || typeof result.reply !== "string")
       throw new Error("External Chief GUI transport returned no reply");
