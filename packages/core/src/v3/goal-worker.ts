@@ -21,6 +21,8 @@ export type GoalRecord = {
   threadId: string;
   objective: string;
   status: GoalStatus;
+  /** Explicit protocol evidence that a blocked Goal needs user input. */
+  humanRequired?: boolean;
   tokensUsed?: number;
   timeUsedSeconds?: number;
   [key: string]: unknown;
@@ -424,6 +426,7 @@ export type GoalWorkerResult = {
   meta: Record<string, unknown>;
   error?: string;
   goalStatus?: GoalStatus;
+  humanRequired?: boolean;
 };
 
 export async function runNativeGoalWorker(options: {
@@ -687,6 +690,7 @@ export async function runNativeGoalWorker(options: {
           timeUsedSeconds: goal.timeUsedSeconds,
         },
         goalStatus: goal.status,
+        ...(goal.humanRequired === true ? { humanRequired: true } : {}),
         error: `GOAL_STATUS:${goal.status}`,
       };
     }

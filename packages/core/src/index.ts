@@ -152,6 +152,7 @@ export {
 export {
   buildWorkerPrompt,
   runWorkerPhase,
+  resumeTechnicalBlockedWorker,
   type V3WorkerConfig,
   type V3WorkerRunner,
   type WorkerPhaseResult,

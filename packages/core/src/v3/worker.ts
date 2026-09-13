@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, unlink } from "node:fs/promises";
+import { join, resolve } from "node:path";
 
 import type { Stage } from "../stages.js";
 import type { StageMeta } from "../agents/index.js";
@@ -54,6 +54,76 @@ export type WorkerPhaseResult = {
   worker?: { text: string; meta: StageMeta; error?: string };
   snapshot?: RepoSnapshot;
 };
+
+/**
+ * Move a technically blocked Worker back to WORKER after the environment has
+ * been repaired.  This is deliberately explicit and narrow: a genuine
+ * HUMAN_REQUIRED pause cannot be resumed through this helper.
+ *
+ * A blocked native Goal is retained as an audit artifact and removed from the
+ * active slot so a retry starts a fresh Goal for the same task/round rather
+ * than replaying a terminal blocked Goal forever.
+ */
+export async function resumeTechnicalBlockedWorker(options: {
+  projectRoot: string;
+  runId: string;
+}): Promise<RunState> {
+  const root = resolve(options.projectRoot);
+  const statePath = runPath(root, options.runId);
+  const state = await loadRunState(statePath);
+  const technicalBlocked =
+    state.failure_reason === "GOAL_STATUS:blocked" &&
+    (state.phase === "HUMAN_REQUIRED" || state.phase === "FAILED");
+  if (!technicalBlocked)
+    throw new Error("run is not a resumable technical Goal block");
+  const project = await loadProjectStateFromProject(root);
+  if (
+    !state.current_task_id ||
+    project.current_task_id !== state.current_task_id
+  )
+    throw new Error("technical Goal recovery task mismatch");
+  const task = project.tasks.find((item) => item.id === state.current_task_id);
+  if (!task || task.status !== "in_progress")
+    throw new Error("technical Goal recovery requires an in_progress task");
+
+  const goalPath = artifact(
+    root,
+    options.runId,
+    state.round,
+    "goal_worker.json"
+  );
+  const blockedPath = artifact(
+    root,
+    options.runId,
+    state.round,
+    "goal_worker.blocked.json"
+  );
+  try {
+    const raw = await readFile(goalPath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed.latest_goal_status !== "blocked")
+      throw new Error("technical Goal recovery artifact is not blocked");
+    // Preserve the complete terminal evidence; never overwrite an existing
+    // audit copy if a previous recovery attempt already created one.
+    try {
+      await writeTextAtomic(blockedPath, raw);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    await unlink(goalPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const { failure_reason: _failureReason, ...withoutFailure } = state;
+  const next: RunState = {
+    ...withoutFailure,
+    phase: "WORKER",
+    status: "running",
+    updated_at: new Date().toISOString(),
+  };
+  await saveRunState(statePath, next);
+  return next;
+}
 
 function git(root: string, args: string[]): string {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
@@ -237,6 +307,8 @@ export function buildWorkerPrompt(
     "Do not choose another backlog item, change priorities, invent requirements, commit, push, merge, or switch branches.",
     "Leave the implementation in the working tree for the Machine Gate.",
     "Respect all protected and forbidden paths.",
+    "Solve technical environment issues yourself when possible (for example, use the project's available Python runner instead of assuming a `python` alias).",
+    "Only stop as a human-required block when an explicit external decision, credential, or user-provided input is genuinely required; do not treat missing commands, test/build failures, or sandbox limits as human-required.",
     "",
     `project goal: ${project.goal}`,
     `current milestone: ${project.current_milestone}`,
@@ -426,7 +498,10 @@ export async function runWorkerPhase(options: {
   await writeJsonAtomic(outputPath, worker);
   if (worker.error) {
     const goalStatus = (worker as { goalStatus?: string }).goalStatus;
-    if (goalStatus === "blocked") {
+    if (
+      goalStatus === "blocked" &&
+      (worker as { humanRequired?: boolean }).humanRequired
+    ) {
       const waiting: RunState = {
         ...run,
         phase: "HUMAN_REQUIRED",
@@ -436,6 +511,11 @@ export async function runWorkerPhase(options: {
       };
       await saveRunState(path, waiting);
       return { runState: waiting, projectState: project, worker };
+    }
+    if (goalStatus === "blocked") {
+      const blocked = failState(run, "GOAL_STATUS:blocked");
+      await saveRunState(path, blocked);
+      return { runState: blocked, projectState: project, worker };
     }
     const failed = failState(run, `Worker execution failed: ${worker.error}`);
     await saveRunState(path, failed);
