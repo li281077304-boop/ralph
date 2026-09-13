@@ -140,6 +140,50 @@ export async function resumeTechnicalBlockedWorker(options: {
     }
   }
   const { failure_reason: _failureReason, ...withoutFailure } = state;
+  // If the blocked Goal left an owned implementation in the worktree, the
+  // environment can be repaired and the deterministic Gate can inspect it
+  // directly.  Capture a fresh evidence boundary instead of rerunning a Goal
+  // over unknown edits.  A clean tree still resumes WORKER normally.
+  const recoveredSnapshot = new GitGuard(
+    root,
+    controls({
+      worker: { agent: "codex" },
+    })
+  ).snapshot();
+  if (recoveredSnapshot.status !== "") {
+    const changedPaths = recoveredSnapshot.status
+      .split("\n")
+      .map((line) => line.slice(3).trim())
+      .filter(Boolean)
+      .sort();
+    await writeJsonAtomic(
+      artifact(root, options.runId, state.round, "worker_evidence.json"),
+      {
+        version: 1,
+        completed: true,
+        run_id: state.run_id,
+        round: state.round,
+        task_id: state.current_task_id,
+        before: snapshotSummary(recoveredSnapshot),
+        after: snapshotSummary(recoveredSnapshot),
+        changed_paths: changedPaths,
+        violations: [],
+        after_workspace_fingerprint: workspaceFingerprint(recoveredSnapshot),
+        before_branch: recoveredSnapshot.branch,
+        after_branch: recoveredSnapshot.branch,
+        recovered_from_technical_block: true,
+        created_at: new Date().toISOString(),
+      }
+    );
+    const next: RunState = {
+      ...withoutFailure,
+      phase: "MACHINE_GATE",
+      status: "running",
+      updated_at: new Date().toISOString(),
+    };
+    await saveRunState(statePath, next);
+    return next;
+  }
   const next: RunState = {
     ...withoutFailure,
     phase: "WORKER",
