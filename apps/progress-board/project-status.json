@@ -114,6 +114,8 @@
   "dashboard": {
     "name": "Dashboard",
     "path": "../outputs/summer-teaching-dashboard",
+    "remote": "https://github.com/li281077304-boop/edu-ops-dashboard.git",
+    "branch": "fix/sol-review-1",
     "checkpoint": "ac90be624b7c541f8d292670418242e59c091d66",
     "status": "FROZEN",
     "milestones": [

@@ -14,7 +14,9 @@ function projectHtml(p) {
   const run = p.currentRun;
   const runLine = run
     ? `${run.phase || "—"} · round ${run.round ?? "—"}`
-    : "NO EVIDENCE";
+    : p.repo?.remoteHead
+      ? `远端证据 · ${p.repo.branch || "—"}`
+      : "NO EVIDENCE";
   return `<article class="project"><div class="project-head"><div><h3>${esc(p.name)}</h3><small>${esc(runLine)}</small></div>${p.status ? `<span class="badge ${esc(p.status)}">${esc(p.status)}</span>` : ""}</div><div class="milestones">${p.milestones.map(milestoneHtml).join("")}</div></article>`;
 }
 function render(d) {
@@ -45,7 +47,7 @@ function render(d) {
   document.querySelector("#git").innerHTML = [d.payroll, d.ralph, d.dashboard]
     .map(
       (p) =>
-        `<div class="git-card"><b>${esc(p.name)}</b><code>${esc(p.repo.head || "NO EVIDENCE")}</code><div>${esc(p.repo.branch || "—")}</div><div class="${p.repo.divergence !== "IN SYNC" ? "warn" : ""}">${esc(p.repo.divergence)}</div><div>${p.repo.dirtyFiles.length ? `DIRTY: ${p.repo.dirtyFiles.length}` : "CLEAN"}</div></div>`
+        `<div class="git-card"><b>${esc(p.name)}</b><code>${esc(p.repo.head ? `LOCAL ${p.repo.head}` : p.repo.remoteHead ? `REMOTE ${p.repo.remoteHead}` : "NO EVIDENCE")}</code><div>${esc(p.repo.branch || "—")}</div><div class="${p.repo.divergence !== "IN SYNC" ? "warn" : ""}">${esc(p.repo.divergence)}</div><div>${p.repo.dirtyFiles.length ? `DIRTY: ${p.repo.dirtyFiles.length}` : "CLEAN"}</div></div>`
     )
     .join("");
   document.querySelector("#deliverables").innerHTML = [

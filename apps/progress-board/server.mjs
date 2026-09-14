@@ -24,19 +24,32 @@ async function git(repo, args) {
     return null;
   }
 }
-async function repoStatus(repo) {
+async function repoStatus(repo, remoteHint = null, branchHint = null) {
   const top = await git(repo, ["rev-parse", "--show-toplevel"]);
   if (!top || path.resolve(top) !== path.resolve(repo)) {
+    let remoteHead = null;
+    if (remoteHint && branchHint) {
+      try {
+        const { stdout } = await exec(
+          "git",
+          ["ls-remote", remoteHint, `refs/heads/${branchHint}`],
+          { maxBuffer: 1024 * 1024 }
+        );
+        remoteHead = stdout.trim().split(/\s+/)[0] || null;
+      } catch {}
+    }
     return {
       repo,
-      branch: null,
+      branch: branchHint,
       head: null,
-      remoteUrl: null,
-      remoteHead: null,
+      remoteUrl: remoteHint,
+      remoteHead,
       dirtyFiles: [],
       ahead: null,
       behind: null,
-      divergence: "NO EVIDENCE",
+      divergence: remoteHead
+        ? "REMOTE EVIDENCE AVAILABLE / LOCAL CHECKOUT NOT FOUND"
+        : "NO EVIDENCE",
     };
   }
   const branch = await git(repo, ["branch", "--show-current"]);
@@ -107,9 +120,16 @@ async function buildState() {
   const manifest = await readJson(manifestPath);
   const payroll = {
     ...manifest.payroll,
-    repo: await repoStatus(path.resolve(root, manifest.payroll.path)),
+    repo: await repoStatus(
+      path.resolve(root, manifest.payroll.path),
+      manifest.payroll.remote,
+      manifest.payroll.branch
+    ),
   };
-  const ralph = { ...manifest.ralph, repo: await repoStatus(root) };
+  const ralph = {
+    ...manifest.ralph,
+    repo: await repoStatus(root, manifest.ralph.remote, manifest.ralph.branch),
+  };
   const ralphState = await latestRun(path.join(root, ".ralph", "chief-runs"));
   if (ralphState) ralph.currentRun = ralphState;
   const payrollRoot = path.resolve(root, manifest.payroll.path);
@@ -118,7 +138,11 @@ async function buildState() {
   );
   const dashboard = {
     ...manifest.dashboard,
-    repo: await repoStatus(path.resolve(root, manifest.dashboard.path)),
+    repo: await repoStatus(
+      path.resolve(root, manifest.dashboard.path),
+      manifest.dashboard.remote,
+      manifest.dashboard.branch
+    ),
   };
   const all = [
     ...payroll.milestones,
