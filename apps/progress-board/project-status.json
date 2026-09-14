@@ -50,6 +50,16 @@
         "evidence": "版本化 DEFAULT_FULL_TIME、PART_TIME_RATE（教师×年级 COEFFICIENT_BASED/FIXED_GRADE_RATE）与 PERSONAL_POLICY 已接入现有 Core 计算；RUN_POLICY_SNAPSHOT 与逐课 RUN_PART_TIME_PRICING_SNAPSHOT 冻结生效政策；历史 July 价格仅显示 HISTORICAL_ONLY；358 项测试通过，真实策略注册表页面已验收。"
       },
       {
+        "title": "Fresh Payroll Production Run",
+        "status": "DONE",
+        "evidence": "真实全新 Run c51dd5f3b544；2026-08-03～2026-08-30；51 位教师；可执行待办 0；正常 UI 导出与 Excel 重开 PASS；导出文件标准工资表 (28).xlsx。"
+      },
+      {
+        "title": "Full Payroll AV Source Discovery",
+        "status": "IN_PROGRESS",
+        "evidence": "已建立只读 AV 来源地图与真实模板公式证据；AF 已确定，其余外围字段的来源、规则或本期输入仍按字段保留缺口。"
+      },
+      {
         "title": "完整 AV（总工资）",
         "status": "DEFERRED",
         "evidence": "续费、退费、激励及杨兆慧领航伴学超出当前范围"
