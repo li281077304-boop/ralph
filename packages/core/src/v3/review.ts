@@ -400,16 +400,49 @@ export async function verifyReviewCheckpoint(
       "Review requires CHIEF_REVIEW/FINAL_REVIEW or WAITING_FOR_CHIEF/review state"
     );
   if (!run.current_task_id || project.current_task_id !== run.current_task_id)
-    throw new Error("Review task identity is inconsistent");
+    if (!(
+      (run.phase === "FINAL_REVIEW" ||
+        (run.phase === "WAITING_FOR_CHIEF" &&
+          run.waiting_handoff?.kind === "review" &&
+          run.waiting_handoff.review_stage === "final")) &&
+      project.current_task_id === null
+    ))
+      throw new Error("Review task identity is inconsistent");
   const active = project.tasks.filter((task) => task.status === "in_progress");
-  if (active.length !== 1 || active[0].id !== run.current_task_id)
+  const finalWithoutActive =
+    !run.current_task_id &&
+    (run.phase === "FINAL_REVIEW" ||
+      (run.phase === "WAITING_FOR_CHIEF" &&
+        run.waiting_handoff?.kind === "review" &&
+        run.waiting_handoff.review_stage === "final"));
+  if (
+    !finalWithoutActive &&
+    (active.length !== 1 || active[0].id !== run.current_task_id)
+  )
     throw new Error("Review requires one matching in_progress task");
-  const checkpointPath = roundPath(
+  let checkpointRound = run.round;
+  let checkpointPath = roundPath(
     projectRoot,
     runId,
-    run.round,
+    checkpointRound,
     "checkpoint.json"
   );
+  if (finalWithoutActive) {
+    // A project whose selected task was completed before UAT still needs an
+    // independent final review of the latest pushed checkpoint. Reuse the
+    // newest prior checkpoint without inventing a second commit.
+    for (let candidate = run.round; candidate >= 1; candidate -= 1) {
+      const path = roundPath(projectRoot, runId, candidate, "checkpoint.json");
+      try {
+        await readFile(path);
+        checkpointRound = candidate;
+        checkpointPath = path;
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  }
   const checkpointBytes = await readFile(checkpointPath);
   const checkpoint = JSON.parse(checkpointBytes.toString("utf8")) as Record<
     string,
@@ -433,8 +466,8 @@ export async function verifyReviewCheckpoint(
   }
   if (
     checkpoint.run_id !== runId ||
-    checkpoint.round !== run.round ||
-    checkpoint.task_id !== run.current_task_id ||
+    (!finalWithoutActive && checkpoint.round !== run.round) ||
+    (!finalWithoutActive && checkpoint.task_id !== run.current_task_id) ||
     checkpoint.pushed !== true
   )
     throw new Error("checkpoint identity is invalid");
@@ -521,10 +554,15 @@ export async function verifyReviewCheckpoint(
     if (waiting.handoff_content_hash !== sha256(handoffContent))
       throw new Error("waiting Review handoff content has changed");
   }
+  const reviewTask = finalWithoutActive
+    ? project.tasks.find((task) => task.id === checkpoint.task_id)
+    : active[0];
+  if (!reviewTask)
+    throw new Error("Review checkpoint task is not present in project plan");
   return {
     project,
     run,
-    task: active[0],
+    task: reviewTask,
     checkpoint,
     checkpointHash,
     gate,
