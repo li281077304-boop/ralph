@@ -15,6 +15,7 @@ import {
   prepareReviewHandoff,
   releaseActiveWriterLock,
   verifyReviewCheckpoint,
+  writeJsonAtomic,
 } from "@daonhan/ralph-core";
 import { runExternalChiefGuiRoundtrip } from "./ralph-gui-chief-bridge.js";
 import { extractMarkedJsonBlock } from "./ralph-gui-bridge.js";
@@ -137,6 +138,45 @@ async function recoverAcceptedDecision(
   );
 }
 
+async function persistTransportEvidence(
+  projectRoot,
+  runId,
+  round,
+  handoffHash,
+  metadata = {}
+) {
+  const path = join(
+    getChiefRunDir(projectRoot, runId),
+    "rounds",
+    String(round).padStart(3, "0"),
+    "external_chief_transport.json"
+  );
+  let previous = {};
+  try {
+    previous = JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    // First attempt has no prior transport receipt.
+  }
+  const numeric = (name) => {
+    const current = Number(metadata[name]);
+    return Number.isFinite(current)
+      ? Number(previous[name] ?? 0) + current
+      : Number(previous[name] ?? 0);
+  };
+  await writeJsonAtomic(path, {
+    version: 1,
+    run_id: runId,
+    round,
+    handoff_hash: handoffHash,
+    chief_request_attempts: numeric("chief_request_attempts"),
+    chief_existing_reply_recoveries: numeric("chief_existing_reply_recoveries"),
+    chief_timeouts: numeric("chief_timeouts"),
+    chief_last_attempt_at:
+      metadata.chief_last_attempt_at ?? previous.chief_last_attempt_at ?? null,
+    updated_at: new Date().toISOString(),
+  });
+}
+
 export async function runV3ReviewTransport(options) {
   const projectRoot = resolve(options.projectRoot);
   const runId = options.runId;
@@ -182,11 +222,34 @@ export async function runV3ReviewTransport(options) {
     const transport =
       options.transport ??
       ((request) => runExternalChiefGuiRoundtrip(options.guiConfig, request));
-    const result = await transport({
+    const transportRequest = {
       identity: preparation.handoff.handoff_hash,
       message: chiefReviewPrompt(preparation),
       closingMarker: REVIEW_CLOSE_MARKER,
-    });
+      runId,
+      round: runState.round,
+      handoffHash: preparation.handoff.handoff_hash,
+    };
+    let result;
+    try {
+      result = await transport(transportRequest);
+    } catch (error) {
+      await persistTransportEvidence(
+        projectRoot,
+        runId,
+        runState.round,
+        preparation.handoff.handoff_hash,
+        error
+      );
+      throw error;
+    }
+    await persistTransportEvidence(
+      projectRoot,
+      runId,
+      runState.round,
+      preparation.handoff.handoff_hash,
+      result
+    );
     if (!result || typeof result.reply !== "string")
       throw new Error("External Chief GUI transport returned no reply");
     const raw = extractMarkedJsonBlock(

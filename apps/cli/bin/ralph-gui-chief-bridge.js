@@ -119,25 +119,110 @@ export async function runExternalChiefGuiBridge(config, context) {
  * mechanics stay in this module; callers own prompt/schema parsing and durable
  * state transitions.
  */
-export async function runExternalChiefGuiRoundtrip(config, request) {
+export async function runExternalChiefGuiRoundtrip(
+  config,
+  request,
+  dependencies = {}
+) {
   const env = loadExtensionEnv(config.extension_env_file);
   const session = config.session ?? "chrome";
   const timeoutMs = config.timeout_ms ?? 180_000;
-  const code = extensionRoundtripCode(
-    config.conversation_url,
-    request.message,
-    request.identity,
-    request.closingMarker,
-    timeoutMs
+  const maxAttempts = Math.max(
+    1,
+    Number(config.max_retry_attempts ?? request.maxAttempts ?? 3)
   );
-  await ensureConversationTab(session, config.conversation_url, env);
-  const result = await runPlaywrightCli(session, code, env, timeoutMs + 30_000);
-  if (!result.reply)
-    throw new GuiBridgeError(
-      result.errorCode ?? "VERDICT_INVALID",
-      result.error ?? "Playwright Extension did not return an assistant reply"
+  const graceMs = Math.max(
+    0,
+    Number(config.reply_grace_ms ?? request.replyGraceMs ?? 5_000)
+  );
+  const runCli = dependencies.runPlaywrightCli ?? runPlaywrightCli;
+  const ensureTab = dependencies.ensureConversationTab ?? ensureConversationTab;
+  const meta = {
+    chief_request_attempts: 0,
+    chief_existing_reply_recoveries: 0,
+    chief_timeouts: 0,
+    chief_last_attempt_at: null,
+  };
+  let lastError;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await ensureTab(session, config.conversation_url, env);
+
+    // A timeout can race with a delayed assistant response. Always probe the
+    // existing conversation before submitting anything, including retries.
+    const probeCode = extensionRoundtripCode(
+      config.conversation_url,
+      request.message,
+      request.identity,
+      request.closingMarker,
+      Math.min(timeoutMs, graceMs || timeoutMs),
+      { submit: false, graceMs }
     );
-  return { reply: result.reply };
+    const probe = await runCli(session, probeCode, env, timeoutMs + 30_000);
+    if (probe.reply) {
+      meta.chief_existing_reply_recoveries += 1;
+      return {
+        reply: probe.reply,
+        recoveryMode: "EXISTING_REPLY",
+        ...meta,
+      };
+    }
+    if (
+      probe.errorCode === "ASSISTANT_REPLY_INCOMPLETE" &&
+      attempt + 1 >= maxAttempts
+    ) {
+      lastError = probe;
+      break;
+    }
+    if (
+      probe.errorCode &&
+      probe.errorCode !== "ASSISTANT_REPLY_TIMEOUT" &&
+      probe.errorCode !== "ASSISTANT_REPLY_INCOMPLETE" &&
+      probe.errorCode !== "NO_EXISTING_REPLY"
+    ) {
+      throw new GuiBridgeError(
+        probe.errorCode,
+        probe.error ?? "Existing assistant reply probe failed"
+      );
+    }
+
+    if (probe.errorCode === "ASSISTANT_REPLY_INCOMPLETE") {
+      lastError = probe;
+      continue;
+    }
+
+    // No matching reply exists: submit once for this bounded attempt.
+    const code = extensionRoundtripCode(
+      config.conversation_url,
+      request.message,
+      request.identity,
+      request.closingMarker,
+      timeoutMs,
+      { submit: true, graceMs: 0 }
+    );
+    meta.chief_request_attempts += 1;
+    meta.chief_last_attempt_at = new Date().toISOString();
+    const result = await runCli(session, code, env, timeoutMs + 30_000);
+    if (result.reply) return { reply: result.reply, ...meta };
+    lastError = result;
+    if (
+      result.errorCode !== "ASSISTANT_REPLY_TIMEOUT" &&
+      result.errorCode !== "ASSISTANT_REPLY_INCOMPLETE"
+    )
+      throw new GuiBridgeError(
+        result.errorCode ?? "VERDICT_INVALID",
+        result.error ?? "Playwright Extension did not return an assistant reply"
+      );
+    if (result.errorCode === "ASSISTANT_REPLY_TIMEOUT")
+      meta.chief_timeouts += 1;
+  }
+
+  const error = new GuiBridgeError(
+    lastError?.errorCode ?? "ASSISTANT_REPLY_TIMEOUT",
+    lastError?.error ?? "Playwright Extension did not return an assistant reply"
+  );
+  Object.assign(error, meta);
+  throw error;
 }
 
 async function ensureConversationTab(session, conversationUrl, env) {
@@ -258,20 +343,56 @@ function expandHome(path) {
     : path;
 }
 
-function extensionRoundtripCode(
+export function extensionRoundtripCode(
   conversationUrl,
   message,
   identity,
   closingMarker,
-  timeoutMs
+  timeoutMs,
+  options = {}
 ) {
+  const submit = options.submit !== false;
+  const graceMs = options.graceMs ?? 0;
   return `(async page => {
     const expectedUrl = ${JSON.stringify(conversationUrl)};
     const message = ${JSON.stringify(message)};
     const identity = ${JSON.stringify(identity)};
     const deadline = Date.now() + ${timeoutMs};
+    const submit = ${JSON.stringify(submit)};
+    const graceMs = ${JSON.stringify(graceMs)};
     if (!page.url().startsWith(expectedUrl))
       throw new Error("CONVERSATION_NOT_FOUND: " + page.url());
+    async function scanReply(waitMs) {
+      const scanDeadline = Date.now() + waitMs;
+      let reply = "";
+      while (Date.now() < scanDeadline || waitMs === 0) {
+        let foundIdentity = false;
+        for (const selector of ${JSON.stringify(ASSISTANT_SELECTORS)}) {
+          const assistant = page.locator(selector);
+          let count = 0;
+          try { count = await assistant.count(); } catch { continue; }
+          for (let index = count - 1; index >= 0; index -= 1) {
+            let text = "";
+            try { text = await assistant.nth(index).innerText(); } catch { continue; }
+            if (text.includes(identity)) {
+              foundIdentity = true;
+              reply = text;
+              if (text.includes(${JSON.stringify(closingMarker)}))
+                return { reply, complete: true };
+            }
+          }
+        }
+        if (waitMs === 0) break;
+        await page.waitForTimeout(250);
+      }
+      return { reply, complete: false, partial: Boolean(reply) };
+    }
+    const existing = await scanReply(graceMs);
+    if (existing.complete) return { reply: existing.reply, recoveryMode: "EXISTING_REPLY" };
+    if (!submit) {
+      if (existing.partial) throw new Error("ASSISTANT_REPLY_INCOMPLETE");
+      return { noExistingReply: true };
+    }
     const findFirstEditableInput = ${findFirstEditableInput.toString()};
     let input;
     let inputDiagnostics = [];
@@ -294,24 +415,9 @@ function extensionRoundtripCode(
     }
     await input.fill(message);
     await input.press("Enter");
-    let reply = "";
-    while (Date.now() < deadline) {
-      for (const selector of ${JSON.stringify(ASSISTANT_SELECTORS)}) {
-        const assistant = page.locator(selector);
-        let count = 0;
-        try { count = await assistant.count(); } catch { continue; }
-        for (let index = count - 1; index >= 0; index -= 1) {
-          let text = "";
-          try { text = await assistant.nth(index).innerText(); } catch { continue; }
-          if (text.includes(identity)) {
-            reply = text;
-            if (text.includes(${JSON.stringify(closingMarker)})) return { reply };
-          }
-        }
-      }
-      await page.waitForTimeout(250);
-    }
-    throw new Error(reply ? "ASSISTANT_REPLY_INCOMPLETE" : "ASSISTANT_REPLY_TIMEOUT");
+    const response = await scanReply(timeoutMs);
+    if (response.complete) return { reply: response.reply };
+    throw new Error(response.partial ? "ASSISTANT_REPLY_INCOMPLETE" : "ASSISTANT_REPLY_TIMEOUT");
   })`;
 }
 
@@ -348,7 +454,11 @@ function runPlaywrightCli(session, code, env, timeoutMs) {
       } catch {
         parsed = { error: stderr.trim() || "Invalid Playwright CLI output" };
       }
-      if (exitCode !== 0 || parsed?.isError || !parsed?.reply) {
+      if (
+        exitCode !== 0 ||
+        parsed?.isError ||
+        (!parsed?.reply && !parsed?.noExistingReply)
+      ) {
         resolveResult({
           errorCode: classifyBridgeError(parsed?.error, signal),
           error:
@@ -358,7 +468,11 @@ function runPlaywrightCli(session, code, env, timeoutMs) {
         });
         return;
       }
-      resolveResult({ reply: parsed.reply });
+      resolveResult({
+        reply: parsed.reply,
+        noExistingReply: Boolean(parsed.noExistingReply),
+        recoveryMode: parsed.recoveryMode,
+      });
     });
   });
 }
