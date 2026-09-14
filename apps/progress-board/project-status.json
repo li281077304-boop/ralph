@@ -41,8 +41,8 @@
       },
       {
         "title": "2026-07 历史工资复现",
-        "status": "IN_PROGRESS",
-        "evidence": "真实 July Run 的 30 位可比教师已生成逐教师差异账本；AA 27/27、AC 25/27、AD 25/27、AE 27/27、AF 24/30；UNEXPLAINED=0，剩余差异均有 MISSING_SOURCE、COURSE_CONTRIBUTION 或 PERSONAL_EXCEPTION 证据，历史复现仍待完成业务口径收敛"
+        "status": "DONE",
+        "evidence": "真实 July Run 的 30 位可比教师已完成逐教师差异账本；AA 27/27、AC 25/27、AD 25/27、AE 27/27、AF 24/30；原 3 个 MISSING_SOURCE 已由逐人 AF 批注恢复为 PART_TIME_RATE；其余差异均有 COURSE_CONTRIBUTION 或 PERSONAL_EXCEPTION 证据；UNEXPLAINED=0"
       },
       {
         "title": "完整 AV（总工资）",
@@ -50,8 +50,8 @@
         "evidence": "续费、退费、激励及杨兆慧领航伴学超出当前范围"
       }
     ],
-    "nextStep": "完成 2026-07 历史工资差异的业务收敛",
-    "nextReason": "逐教师账本已证明 UNEXPLAINED=0；下一步处理已分类的历史字段缺失、课程贡献差异与个人例外，不修改 Golden 或生产公式。",
+    "nextStep": "维持 July 历史工资对账证据",
+    "nextReason": "历史差异均已分类并绑定来源；后续如需调整规则，应创建新版本并保留本次账本。",
     "artifacts": [
       "/Users/macos/Desktop/工资导出/2026年7月规则重建验证-命名版本-隔离.xlsx"
     ]
