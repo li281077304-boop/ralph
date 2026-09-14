@@ -45,6 +45,11 @@
         "evidence": "真实 July Run 的 30 位可比教师已完成逐教师差异账本；AA 27/27、AC 25/27、AD 25/27、AE 27/27、AF 24/30；原 3 个 MISSING_SOURCE 已由逐人 AF 批注恢复为 PART_TIME_RATE；其余差异均有 COURSE_CONTRIBUTION 或 PERSONAL_EXCEPTION 证据；UNEXPLAINED=0"
       },
       {
+        "title": "Production Payroll Policy Registry",
+        "status": "DONE",
+        "evidence": "版本化 DEFAULT_FULL_TIME、PART_TIME_RATE（教师×年级 COEFFICIENT_BASED/FIXED_GRADE_RATE）与 PERSONAL_POLICY 已接入现有 Core 计算；RUN_POLICY_SNAPSHOT 与逐课 RUN_PART_TIME_PRICING_SNAPSHOT 冻结生效政策；历史 July 价格仅显示 HISTORICAL_ONLY；358 项测试通过，真实策略注册表页面已验收。"
+      },
+      {
         "title": "完整 AV（总工资）",
         "status": "DEFERRED",
         "evidence": "续费、退费、激励及杨兆慧领航伴学超出当前范围"
