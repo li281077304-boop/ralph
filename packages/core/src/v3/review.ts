@@ -31,6 +31,7 @@ export const REVIEW_OPEN_MARKER = "<<<CHIEF_REVIEW_JSON>>>";
 export const REVIEW_CLOSE_MARKER = "<<<END_CHIEF_REVIEW_JSON>>>";
 
 type ReviewAction = "PASS" | "PATCH" | "HUMAN_REQUIRED";
+export type ReviewStage = "legacy" | "chief" | "final";
 type FindingSeverity = "blocking" | "warning" | "note";
 
 export interface ChiefReviewDecision {
@@ -70,6 +71,7 @@ export interface ReviewHandoff {
   repo_full_name: string;
   base_sha: string;
   head_sha: string;
+  review_stage?: "chief" | "final";
 }
 
 export interface ReviewPreparation {
@@ -388,13 +390,14 @@ export async function verifyReviewCheckpoint(
   assertRunState(run);
   assertProjectState(project);
   if (!(
-    (run.phase === "CHIEF_REVIEW" && run.status === "running") ||
+    ((run.phase === "CHIEF_REVIEW" || run.phase === "FINAL_REVIEW") &&
+      run.status === "running") ||
     (run.phase === "WAITING_FOR_CHIEF" &&
       run.status === "waiting" &&
       run.waiting_handoff?.kind === "review")
   ))
     throw new Error(
-      "Review requires CHIEF_REVIEW/running or WAITING_FOR_CHIEF/review state"
+      "Review requires CHIEF_REVIEW/FINAL_REVIEW or WAITING_FOR_CHIEF/review state"
     );
   if (!run.current_task_id || project.current_task_id !== run.current_task_id)
     throw new Error("Review task identity is inconsistent");
@@ -498,7 +501,14 @@ export async function verifyReviewCheckpoint(
       waiting.run_id !== runId ||
       waiting.round !== run.round ||
       waiting.handoff_path !==
-        roundPath(projectRoot, runId, run.round, "review_handoff.md")
+        roundPath(
+          projectRoot,
+          runId,
+          run.round,
+          waiting.review_stage === "final"
+            ? "final_review_handoff.md"
+            : "review_handoff.md"
+        )
     )
       throw new Error("waiting Review handoff identity is invalid");
     if (waiting.project_state_hash !== hashProjectState(project))
@@ -553,14 +563,17 @@ function gateSummary(commands: unknown[]): string {
 export async function prepareReviewHandoff(
   projectRoot: string,
   runId: string,
-  resolveRemoteUrl: ReviewRemoteUrlResolver = checkpointRemoteUrl
+  resolveRemoteUrl: ReviewRemoteUrlResolver = checkpointRemoteUrl,
+  reviewStage: ReviewStage = "legacy"
 ): Promise<ReviewPreparation> {
   const context = await verifyReviewCheckpoint(
     projectRoot,
     runId,
     resolveRemoteUrl
   );
-  if (context.run.phase !== "CHIEF_REVIEW" || context.run.status !== "running")
+  const expectedPhase =
+    reviewStage === "final" ? "FINAL_REVIEW" : "CHIEF_REVIEW";
+  if (context.run.phase !== expectedPhase || context.run.status !== "running")
     throw new Error(
       "Review handoff preparation requires CHIEF_REVIEW/running state"
     );
@@ -634,7 +647,7 @@ export async function prepareReviewHandoff(
     projectRoot,
     runId,
     context.run.round,
-    "review_handoff.md"
+    reviewStage === "final" ? "final_review_handoff.md" : "review_handoff.md"
   );
   await writeTextAtomic(handoffPath, content);
   const handoffContentHash = sha256(Buffer.from(content, "utf8"));
@@ -649,6 +662,7 @@ export async function prepareReviewHandoff(
     project_state_hash: payload.project_state_hash,
     checkpoint_hash: context.checkpointHash,
     gate_artifact_hash: context.gateArtifactHash,
+    ...(reviewStage !== "legacy" ? { review_stage: reviewStage } : {}),
     created_at: createdAt,
   };
   const next: RunState = {
@@ -668,18 +682,64 @@ export async function prepareReviewHandoff(
       content,
       handoff_hash: handoffHash,
       handoff_content_hash: handoffContentHash,
+      ...(reviewStage !== "legacy" ? { review_stage: reviewStage } : {}),
     },
   };
 }
 
 function transitionFor(
   decision: ChiefReviewDecision,
-  context: ReviewContext
+  context: ReviewContext,
+  reviewStage: ReviewStage = "legacy"
 ): ReviewTransition {
   const now = new Date().toISOString();
   let afterProject = context.project;
   let afterRun: RunState;
-  if (decision.action === "PASS") {
+  if (decision.action === "PASS" && reviewStage === "chief") {
+    const {
+      waiting_handoff: _waiting,
+      head_evidence: _headEvidence,
+      ...withoutWaiting
+    } = context.run;
+    afterRun = {
+      ...withoutWaiting,
+      phase: "INTEGRATION_UAT",
+      status: "running",
+      updated_at: now,
+    };
+    // The task remains active until final review accepts the complete slice.
+    afterProject = { ...context.project, updated_at: now };
+  } else if (decision.action === "PASS" && reviewStage === "final") {
+    afterProject = {
+      ...context.project,
+      current_task_id: null,
+      updated_at: now,
+      tasks: context.project.tasks.map((task) =>
+        task.id === context.task.id
+          ? { ...task, status: "done", updated_round: context.run.round }
+          : task
+      ),
+    };
+    const {
+      waiting_handoff: _waiting,
+      head_evidence: _headEvidence,
+      ...withoutWaiting
+    } = context.run;
+    const remaining = afterProject.tasks.some(
+      (task) =>
+        task.id !== context.task.id &&
+        !["done", "cancelled"].includes(task.status)
+    );
+    afterRun = {
+      ...withoutWaiting,
+      round: remaining ? context.run.round + 1 : context.run.round,
+      phase: remaining ? "SELECT" : "DONE",
+      status: remaining ? "running" : "done",
+      current_task_id: null,
+      updated_at: now,
+    };
+    if (!remaining) afterProject.status = "done";
+  } else if (decision.action === "PASS") {
     afterProject = {
       ...context.project,
       current_task_id: null,
@@ -754,21 +814,37 @@ export async function applyReviewDecision(
   projectRoot: string,
   runId: string,
   rawDecision?: unknown,
-  resolveRemoteUrl: ReviewRemoteUrlResolver = checkpointRemoteUrl
+  resolveRemoteUrl: ReviewRemoteUrlResolver = checkpointRemoteUrl,
+  reviewStage: ReviewStage = "legacy"
 ): Promise<{ runState: RunState; projectState: ProjectState }> {
   const runPathValue = runPath(projectRoot, runId);
   const currentRun = await loadRunState(runPathValue);
+  const effectiveStage: ReviewStage =
+    reviewStage !== "legacy"
+      ? reviewStage
+      : currentRun.waiting_handoff?.kind === "review" &&
+          currentRun.waiting_handoff.review_stage
+        ? currentRun.waiting_handoff.review_stage
+        : "legacy";
+  const decisionName =
+    effectiveStage === "final"
+      ? "final_review_decision.json"
+      : "review_decision.json";
+  const transitionName =
+    effectiveStage === "final"
+      ? "final_review_transition.json"
+      : "review_transition.json";
   const decisionPath = roundPath(
     projectRoot,
     runId,
     currentRun.round,
-    "review_decision.json"
+    decisionName
   );
   const transitionPath = roundPath(
     projectRoot,
     runId,
     currentRun.round,
-    "review_transition.json"
+    transitionName
   );
   let stored: unknown | undefined;
   try {
@@ -850,7 +926,7 @@ export async function applyReviewDecision(
       throw new Error("Review decision is immutable and cannot be replaced");
     validateChiefReviewDecision(decision, context);
   }
-  const transition = transitionFor(decision, context);
+  const transition = transitionFor(decision, context, effectiveStage);
   await writeJsonImmutable(transitionPath, transition);
   await saveProjectStateToProject(projectRoot, transition.after_project_state);
   await saveRunState(runPathValue, transition.after_run_state);
@@ -859,7 +935,9 @@ export async function applyReviewDecision(
       projectRoot,
       runId,
       context.run.round,
-      "review_transition_receipt.json"
+      effectiveStage === "final"
+        ? "final_review_transition_receipt.json"
+        : "review_transition_receipt.json"
     ),
     {
       version: 1,

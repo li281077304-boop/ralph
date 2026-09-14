@@ -185,6 +185,34 @@ test("CHIEF_REVIEW prepares strict waiting handoff and PASS returns to SELECT", 
   );
 });
 
+test("V3 staged review routes Chief PASS to UAT and Final PASS to DONE", async () => {
+  const f = await seed(true);
+  const calls = { count: 0 };
+  const chief = await runV3ReviewTransport({
+    projectRoot: f.root,
+    runId: f.runId,
+    reviewStage: "chief",
+    transport: transport(calls),
+  });
+  assert.equal(chief.runState.phase, "INTEGRATION_UAT");
+  assert.equal(chief.projectState.tasks[0].status, "in_progress");
+  const runPath = join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json");
+  await saveRunState(runPath, {
+    ...chief.runState,
+    phase: "FINAL_REVIEW",
+    status: "running",
+  });
+  const final = await runV3ReviewTransport({
+    projectRoot: f.root,
+    runId: f.runId,
+    reviewStage: "final",
+    transport: transport(calls),
+  });
+  assert.equal(final.runState.phase, "DONE");
+  assert.equal(final.runState.status, "done");
+  assert.equal(final.projectState.status, "done");
+});
+
 test("existing review handoff is reused and accepted recovery skips GUI", async () => {
   const f = await seed(true);
   const calls = { count: 0 };

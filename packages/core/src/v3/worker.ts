@@ -299,22 +299,30 @@ async function readPreviousReviewDecision(
   task: ProjectTask
 ): Promise<unknown> {
   if (run.round <= 1) return undefined;
-  const path = artifact(
-    root,
-    run.run_id,
-    run.round - 1,
-    "review_decision.json"
-  );
+  const paths = [
+    artifact(root, run.run_id, run.round - 1, "review_decision.json"),
+    artifact(root, run.run_id, run.round - 1, "final_review_decision.json"),
+  ];
   let decision: ReturnType<typeof parseChiefReviewDecision>;
+  let path = paths[0];
+  let raw: string | undefined;
+  for (const candidate of paths) {
+    try {
+      raw = await readFile(candidate, "utf8");
+      path = candidate;
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        throw new Error(`review decision is malformed: ${candidate}`, {
+          cause: error,
+        });
+    }
+  }
+  if (raw === undefined) return undefined;
   try {
-    decision = parseChiefReviewDecision(
-      JSON.parse(await readFile(path, "utf8"))
-    );
+    decision = parseChiefReviewDecision(JSON.parse(raw));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new Error(`review_decision.json is malformed: ${path}`, {
-      cause: error,
-    });
+    throw new Error(`review decision is malformed: ${path}`, { cause: error });
   }
   if (decision.action !== "PATCH")
     throw new Error("Previous Review decision is not a PATCH continuation");
@@ -338,6 +346,34 @@ async function readPreviousReviewDecision(
   )
     throw new Error("Previous Review PATCH task continuity is invalid");
   return decision;
+}
+
+async function readPreviousPhasePatch(
+  root: string,
+  run: RunState,
+  task: ProjectTask
+): Promise<unknown> {
+  if (run.round <= 1) return undefined;
+  for (const name of ["integration_uat.json", "final_review_decision.json"]) {
+    const path = artifact(root, run.run_id, run.round - 1, name);
+    try {
+      const value = JSON.parse(await readFile(path, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      if (
+        value.run_id !== run.run_id ||
+        value.round !== run.round - 1 ||
+        value.task_id !== task.id
+      )
+        throw new Error(`${name} task continuity is invalid`);
+      if (value.action === "PATCH") return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw new Error(`${name} is malformed: ${path}`, { cause: error });
+    }
+  }
+  return undefined;
 }
 
 export function buildWorkerPrompt(
@@ -531,6 +567,10 @@ export async function runWorkerPhase(options: {
     decision === undefined
       ? await readPreviousReviewDecision(root, run, project, task)
       : undefined;
+  const phasePatch =
+    decision === undefined && !reviewDecision
+      ? await readPreviousPhasePatch(root, run, task)
+      : undefined;
   const prompt = buildWorkerPrompt(
     project,
     run,
@@ -538,7 +578,9 @@ export async function runWorkerPhase(options: {
     decision ??
       (reviewDecision
         ? { continuation: "REVIEW_PATCH", review_decision: reviewDecision }
-        : undefined)
+        : phasePatch
+          ? { continuation: "PHASE_PATCH", patch_context: phasePatch }
+          : undefined)
   );
   await writeTextAtomic(join(round, "worker_prompt.md"), `${prompt}\n`);
   const runner =

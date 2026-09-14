@@ -146,6 +146,7 @@ export {
   verifyReviewCheckpoint,
   type ChiefReviewDecision,
   type ReviewHandoff,
+  type ReviewStage,
   type ReviewPreparation,
   type ReviewRemoteUrlResolver,
 } from "./v3/review.js";
@@ -183,3 +184,10 @@ export {
   type V3WorkConfig,
   type V3WorkResult,
 } from "./v3/work.js";
+export {
+  runIntegrationUatPhase,
+  type IntegrationUatAction,
+  type IntegrationUatOutcome,
+  type IntegrationUatResult,
+  type V3IntegrationUatConfig,
+} from "./v3/integration-uat.js";

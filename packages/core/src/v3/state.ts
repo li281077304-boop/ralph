@@ -79,6 +79,8 @@ export interface ReviewWaitingHandoff {
   project_state_hash: string;
   checkpoint_hash: string;
   gate_artifact_hash: string;
+  /** Explicit review stage for the V3 loop; omitted for legacy reviews. */
+  review_stage?: "chief" | "final";
   created_at: string;
 }
 export type WaitingHandoff =

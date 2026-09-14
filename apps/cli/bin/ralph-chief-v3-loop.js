@@ -2,12 +2,15 @@
 
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
 
 import {
   getChiefRunDir,
   loadChiefConfig,
   loadRunState,
   runV3WorkSlice,
+  runIntegrationUatPhase,
+  writeJsonAtomic,
 } from "@daonhan/ralph-core";
 import { runV3SelectTransport } from "./ralph-chief-v3-select.js";
 import { runV3ReviewTransport } from "./ralph-chief-v3-review.js";
@@ -41,6 +44,19 @@ function result(status, state, extra = {}) {
   return { status, runState: state, ...extra };
 }
 
+async function updateTelemetry(projectRoot, runId, patch) {
+  const path = join(getChiefRunDir(projectRoot, runId), "telemetry.json");
+  let current = {};
+  try {
+    current = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const next = { version: 1, ...current, ...patch };
+  if (!next.run_started_at) next.run_started_at = new Date().toISOString();
+  await writeJsonAtomic(path, next);
+}
+
 function phaseMessage(state) {
   if (state.phase === "SELECT") return "总工正在选择任务";
   if (isWaitingFor(state, "select")) return "正在恢复总工选择";
@@ -49,7 +65,15 @@ function phaseMessage(state) {
   if (state.phase === "CHECKPOINT") return "正在创建并推送检查点";
   if (state.phase === "CHIEF_REVIEW") return "外部总工正在独立审查 GitHub";
   if (isWaitingFor(state, "review")) return "正在恢复外部总工审查";
+  if (state.phase === "INTEGRATION_UAT") return "正在进行集成验收";
+  if (state.phase === "FINAL_REVIEW") return "外部总工正在进行最终审查";
   return undefined;
+}
+function telemetryPhaseKey(phase) {
+  if (phase === "INTEGRATION_UAT") return "uat";
+  if (phase === "CHIEF_REVIEW" || phase === "FINAL_REVIEW") return "review";
+  if (phase === "WORKER") return "worker";
+  return String(phase).toLowerCase();
 }
 
 /** Route durable V3 phases; each existing runner owns its own writer lock. */
@@ -79,10 +103,33 @@ export async function runV3BigLoop(options) {
         projectRoot,
         runId,
         guiConfig: config.gui_bridge,
+        reviewStage: "chief",
+      }),
+    uat: () =>
+      runIntegrationUatPhase({
+        projectRoot,
+        runId,
+        config: {
+          uat_commands: config.uat_commands,
+          timeout_seconds: config.timeout_seconds,
+          gate_allowed_paths: config.gate_allowed_paths,
+        },
+      }),
+    finalReview: () =>
+      runV3ReviewTransport({
+        projectRoot,
+        runId,
+        guiConfig: config.gui_bridge,
+        reviewStage: "final",
       }),
   };
   const maxIterations = options.maxIterations ?? config.max_iterations;
   let dispatches = 0;
+  const resumedAt = new Date().toISOString();
+  await updateTelemetry(projectRoot, runId, {
+    run_id: runId,
+    run_last_resumed_at: resumedAt,
+  });
 
   while (true) {
     const state = await loadState(projectRoot, runId);
@@ -97,7 +144,10 @@ export async function runV3BigLoop(options) {
       return result("HUMAN_REQUIRED", state, { dispatches });
     if (state.phase === "FAILED")
       return result("FAILED", state, { dispatches });
-    if (state.phase === "INTEGRATION_UAT" || state.phase === "FINAL_REVIEW")
+    if (
+      (state.phase === "INTEGRATION_UAT" && !handlers.uat) ||
+      (state.phase === "FINAL_REVIEW" && !handlers.finalReview)
+    )
       return result("NEXT_PHASE_REQUIRED", state, {
         nextPhase: state.phase,
         dispatches,
@@ -114,6 +164,16 @@ export async function runV3BigLoop(options) {
       handler = handlers.work;
     else if (state.phase === "CHIEF_REVIEW" && state.status === "running")
       handler = handlers.review;
+    else if (state.phase === "INTEGRATION_UAT" && state.status === "running")
+      handler = handlers.uat;
+    else if (state.phase === "FINAL_REVIEW" && state.status === "running")
+      handler = handlers.finalReview;
+    else if (
+      isWaitingFor(state, "review") &&
+      state.waiting_handoff?.review_stage === "final" &&
+      handlers.finalReview
+    )
+      handler = handlers.finalReview;
     else if (isWaitingFor(state, "review")) handler = handlers.review;
     else if (state.phase === "WAITING_FOR_CHIEF")
       throw new Error(
@@ -126,6 +186,10 @@ export async function runV3BigLoop(options) {
 
     if (typeof handler !== "function")
       throw new Error(`V3 Big Loop has no handler for phase ${state.phase}`);
+    await updateTelemetry(projectRoot, runId, {
+      [`${telemetryPhaseKey(state.phase)}_started_at`]:
+        new Date().toISOString(),
+    });
     options.onProgress?.({
       round: state.round,
       phase: state.phase,
@@ -135,6 +199,10 @@ export async function runV3BigLoop(options) {
     try {
       await handler(state, { projectRoot, runId, config });
       dispatches += 1;
+      await updateTelemetry(projectRoot, runId, {
+        [`${telemetryPhaseKey(state.phase)}_finished_at`]:
+          new Date().toISOString(),
+      });
     } catch (error) {
       const current = await loadState(projectRoot, runId).catch(() => state);
       const reason = error instanceof Error ? error.message : String(error);

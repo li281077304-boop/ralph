@@ -238,6 +238,7 @@ export function assertRunState(value: unknown): asserts value is RunState {
         "project_state_hash",
         "checkpoint_hash",
         "gate_artifact_hash",
+        "review_stage",
         "created_at",
       ],
       "waiting_handoff"
@@ -277,6 +278,12 @@ export function assertRunState(value: unknown): asserts value is RunState {
         if (!/^[0-9a-f]{64}$/.test(value.waiting_handoff[field]))
           fail(`waiting_handoff.${field} must be lowercase SHA-256`);
       }
+      if (
+        value.waiting_handoff.review_stage !== undefined &&
+        value.waiting_handoff.review_stage !== "chief" &&
+        value.waiting_handoff.review_stage !== "final"
+      )
+        fail("waiting_handoff.review_stage is unknown");
     } else if (
       value.waiting_handoff.handoff_content_hash !== undefined ||
       value.waiting_handoff.project_state_hash !== undefined ||
