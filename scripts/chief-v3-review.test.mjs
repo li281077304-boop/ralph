@@ -369,6 +369,48 @@ test("malformed Review replies preserve WAITING_FOR_CHIEF", async () => {
   assert.equal(state.phase, "WAITING_FOR_CHIEF");
 });
 
+test("external Chief timeout evidence is durably recorded for recovery", async () => {
+  const f = await seed(true);
+  await assert.rejects(
+    runV3ReviewTransport({
+      projectRoot: f.root,
+      runId: f.runId,
+      transport: async () => {
+        throw new Error("stop after handoff");
+      },
+    })
+  );
+  const timeout = Object.assign(new Error("assistant timeout"), {
+    chief_request_attempts: 2,
+    chief_existing_reply_recoveries: 1,
+    chief_timeouts: 2,
+    chief_last_attempt_at: now,
+  });
+  await assert.rejects(
+    runV3ReviewTransport({
+      projectRoot: f.root,
+      runId: f.runId,
+      transport: async () => {
+        throw timeout;
+      },
+    }),
+    /assistant timeout/
+  );
+  const evidence = JSON.parse(
+    await readFile(
+      join(
+        getChiefRunDir(f.root, f.runId),
+        "rounds/001/external_chief_transport.json"
+      ),
+      "utf8"
+    )
+  );
+  assert.equal(evidence.chief_request_attempts, 2);
+  assert.equal(evidence.chief_existing_reply_recoveries, 1);
+  assert.equal(evidence.chief_timeouts, 2);
+  assert.equal(evidence.chief_last_attempt_at, now);
+});
+
 test("waiting Review revalidates current remote identity before GUI", async () => {
   const f = await seed(true);
   await assert.rejects(
