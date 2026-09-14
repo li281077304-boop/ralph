@@ -56,8 +56,8 @@
       },
       {
         "title": "Full Payroll AV Source Discovery",
-        "status": "IN_PROGRESS",
-        "evidence": "已建立只读 AV 来源地图与真实模板公式证据；AF 已确定，其余外围字段的来源、规则或本期输入仍按字段保留缺口。"
+        "status": "DONE",
+        "evidence": "真实模板与 July/August 工资表已确认 M=实际基本工资，公式为 (G+H+I+J)/K×L；AV 已按模板明确为 14 个直接组成项（M、AF、AG、AK、AL、AM、AN、AO、AP、AQ、AR、AS、AT、AU），AK 的 AH/AI/AJ 单独记录为上游依赖；AV 标记为 DERIVED_OUTPUT，完整度分母为 14。M 当前为 SOURCE_AVAILABLE_NOT_CONNECTED，其余外围字段按真实来源与规则证据保留缺口。"
       },
       {
         "title": "完整 AV（总工资）",
