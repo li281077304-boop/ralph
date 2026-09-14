@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "payroll": {
+    "name": "Payroll",
+    "path": "../education-payroll-longrun-20260913",
+    "milestones": [
+      {
+        "title": "8 月核心工资",
+        "status": "DONE",
+        "evidence": "真实 UAT PASS；核心计算已交付"
+      },
+      {
+        "title": "AA / AC / AD",
+        "status": "DONE",
+        "evidence": "核心计算链与 Golden 回归证据"
+      },
+      {
+        "title": "AE / AF（总课时费）",
+        "status": "DONE",
+        "evidence": "Run 级义务课时与模板公式证据"
+      },
+      {
+        "title": "年级推断",
+        "status": "DONE",
+        "evidence": "系统权威、上传资料、默认值均保留 provenance"
+      },
+      {
+        "title": "真实模板导出",
+        "status": "DONE",
+        "evidence": "真实 XLSX 导出、重复导出不覆盖、可重新打开"
+      },
+      {
+        "title": "2026-07 核心计算",
+        "status": "DONE",
+        "evidence": "独立规则版本 core_rules_2026_07_v1；核心覆盖 102/102"
+      },
+      {
+        "title": "2026-07 历史工资复现",
+        "status": "NOT_PROVEN",
+        "evidence": "历史工资周期约 06-29 → 08-02；当前 Run 使用自然月窗口，scope 不一致"
+      },
+      {
+        "title": "完整 AV（总工资）",
+        "status": "DEFERRED",
+        "evidence": "续费、退费、激励及杨兆慧领航伴学超出当前范围"
+      }
+    ],
+    "nextStep": "统一“工资核算周期”概念",
+    "nextReason": "统一 period_label、period_start、period_end，并让 schedule、规则、预览、导出与历史比较使用同一周期。",
+    "artifacts": [
+      "/Users/macos/Desktop/工资导出/2026年7月规则重建验证-命名版本-隔离.xlsx"
+    ]
+  },
+  "ralph": {
+    "name": "Ralph",
+    "path": ".",
+    "baseline": "4285216d7b80ea7bfae34a104511a120effe7ade",
+    "milestones": [
+      {
+        "title": "Native Goal",
+        "status": "DONE",
+        "evidence": "已通过 Native Goal Worker 验证"
+      },
+      {
+        "title": "Machine Gate",
+        "status": "DONE",
+        "evidence": "已有 Gate 通过证据"
+      },
+      {
+        "title": "Checkpoint",
+        "status": "DONE",
+        "evidence": "canonical checkpoint 通过"
+      },
+      {
+        "title": "External Chief Review",
+        "status": "DONE",
+        "evidence": "独立 GitHub Review 通过"
+      },
+      {
+        "title": "Integration UAT",
+        "status": "DONE",
+        "evidence": "V3 Integration UAT 通过"
+      },
+      {
+        "title": "Final Review",
+        "status": "DONE",
+        "evidence": "核心工资 P0 Final Review 通过"
+      },
+      {
+        "title": "Timeout Recovery",
+        "status": "DONE",
+        "evidence": "同一 handoff 恢复语义已通过"
+      },
+      {
+        "title": "Crash Resume",
+        "status": "DONE",
+        "evidence": "durable recovery 测试通过"
+      },
+      {
+        "title": "Fresh complex Goal full autonomous run",
+        "status": "NOT_PROVEN",
+        "evidence": "没有连续无人值守完整复杂任务证据"
+      },
+      {
+        "title": "5-hour unattended run",
+        "status": "NOT_PROVEN",
+        "evidence": "没有连续五小时运行证据"
+      }
+    ],
+    "nextStep": "完成一次可追溯的真实复杂无人值守运行",
+    "nextReason": "现有基础设施已通过分阶段验证，但长时间连续运行仍未被证明。",
+    "artifacts": []
+  },
+  "dashboard": {
+    "name": "Dashboard",
+    "path": "../outputs/summer-teaching-dashboard",
+    "checkpoint": "ac90be624b7c541f8d292670418242e59c091d66",
+    "status": "FROZEN",
+    "milestones": [
+      {
+        "title": "Metric contracts",
+        "status": "DONE",
+        "evidence": "契约已冻结"
+      },
+      {
+        "title": "Dimension isolation",
+        "status": "DONE",
+        "evidence": "兼容性契约已验证"
+      },
+      {
+        "title": "Cancellation handling",
+        "status": "DONE",
+        "evidence": "取消处理契约已验证"
+      },
+      {
+        "title": "Payroll compatibility contract",
+        "status": "DONE",
+        "evidence": "PAYROLL_DASHBOARD_COMPATIBILITY 已验证"
+      },
+      {
+        "title": "Canonical adapter prototype",
+        "status": "DONE",
+        "evidence": "当前 fixture/prototype"
+      },
+      {
+        "title": "Real PostgreSQL",
+        "status": "NOT_TESTED",
+        "evidence": "NO EVIDENCE"
+      },
+      {
+        "title": "Real Metabase",
+        "status": "NOT_TESTED",
+        "evidence": "NO EVIDENCE"
+      },
+      {
+        "title": "Real Scheduler",
+        "status": "NOT_TESTED",
+        "evidence": "NO EVIDENCE"
+      }
+    ],
+    "nextStep": "保持 FROZEN，等待真实基础设施验证",
+    "nextReason": "v0.1 只展示现有 fixture，不把 prototype 当正式部署。",
+    "artifacts": [
+      "/Users/macos/Documents/做表/outputs/summer-teaching-dashboard/summer-teacher-dashboard.html"
+    ]
+  }
+}

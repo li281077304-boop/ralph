@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>开发施工驾驶舱</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">VIBE CODING DEVELOPMENT COCKPIT · V0.1</p>
+          <h1>开发施工驾驶舱</h1>
+          <p class="subtitle">
+            把真实交付、当前阻塞和下一步，放在同一块屏幕上。
+          </p>
+        </div>
+        <div class="refresh" id="updated">读取中…</div>
+      </header>
+      <section class="hero">
+        <div>
+          <span class="kicker">现在在做什么</span>
+          <h2 id="doing">读取证据中…</h2>
+          <p id="why">—</p>
+        </div>
+        <div class="next">
+          <span class="kicker">当前推荐下一步</span><strong id="next">—</strong>
+          <p id="nextReason">—</p>
+        </div>
+      </section>
+      <section class="score" id="score"></section>
+      <section class="project-grid" id="projects"></section>
+      <section class="lower-grid">
+        <article class="panel">
+          <div class="panel-title">
+            <span>我现在真正能用什么？</span
+            ><span class="muted">可操作成果</span>
+          </div>
+          <div id="deliverables" class="deliverables"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-title">
+            <span>最近重要事件</span><span class="muted">不展示提交噪音</span>
+          </div>
+          <ol id="timeline" class="timeline"></ol>
+        </article>
+      </section>
+      <section class="panel">
+        <div class="panel-title">
+          <span>Git 状态</span><span class="muted">自动读取本地与远端</span>
+        </div>
+        <div id="git" class="git-grid"></div>
+      </section>
+      <footer>
+        只读视图 · 状态来自 durable evidence 与项目语义 manifest ·
+        <span id="footerPath"></span>
+      </footer>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
