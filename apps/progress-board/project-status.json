@@ -32,12 +32,17 @@
       {
         "title": "2026-07 核心计算",
         "status": "DONE",
-        "evidence": "独立规则版本 core_rules_2026_07_v1；核心覆盖 102/102"
+        "evidence": "独立规则版本 core_rules_2026_07_v1；显式核算周期内核心覆盖 102/102"
+      },
+      {
+        "title": "工资核算周期模型",
+        "status": "DONE",
+        "evidence": "Run 已拆分 period_label=2026-07 与 period_start=2026-06-29、period_end=2026-08-02；旧 Run 保留 LEGACY_CALENDAR_DEFAULT；339 项测试通过"
       },
       {
         "title": "2026-07 历史工资复现",
-        "status": "NOT_PROVEN",
-        "evidence": "历史工资周期约 06-29 → 08-02；当前 Run 使用自然月窗口，scope 不一致"
+        "status": "IN_PROGRESS",
+        "evidence": "真实排课 3694 条已按 06-29 → 08-02 纳入；周期边界问题已修复，完整历史数值对账仍待完成"
       },
       {
         "title": "完整 AV（总工资）",
@@ -45,8 +50,8 @@
         "evidence": "续费、退费、激励及杨兆慧领航伴学超出当前范围"
       }
     ],
-    "nextStep": "统一“工资核算周期”概念",
-    "nextReason": "统一 period_label、period_start、period_end，并让 schedule、规则、预览、导出与历史比较使用同一周期。",
+    "nextStep": "完成 2026-07 历史工资结果对账",
+    "nextReason": "周期模型已统一；下一步用真实 7 月最终工资表逐教师核对 AA/AC/AD/AE/AF，保留可解释的数据或规则差异。",
     "artifacts": [
       "/Users/macos/Desktop/工资导出/2026年7月规则重建验证-命名版本-隔离.xlsx"
     ]

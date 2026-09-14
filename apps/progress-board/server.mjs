@@ -173,7 +173,8 @@ async function buildState() {
       "Ralph Final Review recovery PASS",
       "Dashboard integration contract frozen",
       "July rule reconstructed",
-      "July historical reproduction blocked by period mismatch",
+      "工资核算周期模型已拆分：2026-07 / 06-29～08-02",
+      "July historical reproduction numeric reconciliation in progress",
     ],
   };
 }
