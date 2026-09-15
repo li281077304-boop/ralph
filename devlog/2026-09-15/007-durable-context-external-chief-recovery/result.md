@@ -18,11 +18,20 @@
 
 ## REAL-UAT-VERIFIED
 
-- real Playwright preflight reached the existing Chrome session.
-- The ChatGPT page displayed a Cloudflare “请验证您是真人” challenge and had no writable composer. The transport classified this as `HUMAN_VERIFICATION_REQUIRED` without sending a handoff; a screenshot is retained beside this file.
-- Therefore six live bridge roundtrips and Ralph External Chief live attempts are `NOT-YET-VERIFIED`; no Host Sol fallback was invoked by this direct probe.
+- The existing prepared Chrome/ChatGPT page was controlled through the
+  Agent-mediated direct GUI path.
+- Three real Ralph Chief handoffs completed: SELECT, REVIEW, and RECOVERY.
+- Each request/reply pair is retained in this entry with run identity and
+  closing marker checks. Result: **3/3 success**, **0 failures**, Host Sol
+  fallback **0**.
+- The direct GUI contract used paste → Enter → accessibility page-text read;
+  no Copy button, new Playwright connection, or browser/session rebuild was
+  required. No human-verification page was observed during these successful
+  handoffs.
 
 ## NOT-YET-VERIFIED
 
-- authenticated, writable ChatGPT session required for the requested 3 bridge + 3 Ralph External Chief success run.
+- a repo-local GUI helper still cannot read AXWebArea text (`AX_PAGE_TEXT_UNAVAILABLE`);
+  the temporary Agent-mediated CUA adapter remains the proven route for this
+  run.
 - CLI SIGINT/SIGTERM integration still needs a controlled pause helper at the top-level process boundary.
