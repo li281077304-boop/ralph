@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  execFileSync,
+  spawn,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
-import { readFile } from "node:fs/promises";
+import { readFile, stat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { writeJsonAtomic } from "./atomic-json.js";
@@ -34,13 +38,43 @@ export type GoalWaitResult = {
   text: string;
 };
 
+export type GoalObservation = {
+  observedAt: string;
+  goal: GoalRecord;
+  transportConnected: boolean;
+  agentMessageAt?: string;
+};
+
+export type GoalWaitOptions = {
+  /** Polling is the authoritative reconciliation path; notifications are a fast path. */
+  pollIntervalMs?: number;
+  /** Test seam for deterministic clock/sleep based liveness tests. */
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+  onObservation?: (observation: GoalObservation) => Promise<void> | void;
+  onAgentMessage?: (observedAt: string, text: string) => Promise<void> | void;
+  stallAfterMs?: number;
+  progressProbe?: () => Promise<boolean> | boolean;
+  onStall?: (details: {
+    goal: GoalRecord;
+    lastMeaningfulProgressAt: string;
+    stallDurationMs: number;
+  }) => Promise<void> | void;
+};
+
 export interface GoalTransport {
   initialize(): Promise<void>;
   startThread(params: Record<string, unknown>): Promise<{ threadId: string }>;
   resumeThread(threadId: string): Promise<void>;
   setGoal(threadId: string, objective: string): Promise<GoalRecord>;
   getGoal(threadId: string): Promise<GoalRecord | null>;
-  waitForGoal(threadId: string, timeoutMs: number): Promise<GoalWaitResult>;
+  waitForGoal(
+    threadId: string,
+    timeoutMs: number,
+    options?: GoalWaitOptions
+  ): Promise<GoalWaitResult>;
+  /** Explicit lifecycle operation. close() intentionally does not pause a Goal. */
+  pauseGoal?(threadId: string): Promise<GoalRecord>;
   close(): Promise<void>;
 }
 
@@ -72,6 +106,43 @@ export type GoalWorkerArtifact = {
   activation_evidence?: GoalActivationEvidence;
   recovery_evidence?: GoalRecoveryEvidence;
   goal?: GoalRecord;
+};
+
+export type GoalLivenessArtifact = {
+  version: 1;
+  run_id: string;
+  round: number;
+  task_id: string;
+  thread_id: string;
+  last_reconcile_at: string;
+  last_goal_status: GoalStatus;
+  last_status_change_at: string;
+  last_agent_message_at?: string;
+  last_workspace_change_at?: string;
+  last_tokens_used?: number;
+  last_time_used_seconds?: number;
+  transport_connected: boolean;
+  transport_last_seen_at: string;
+  stall_state: "healthy" | "suspect" | "stalled";
+  stall_reason?: string;
+  updated_at: string;
+};
+
+export type GoalStallArtifact = {
+  version: 1;
+  run_id: string;
+  round: number;
+  task_id: string;
+  thread_id: string;
+  goal_status: GoalStatus;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
+  last_meaningful_progress_at: string;
+  stall_duration_seconds: number;
+  workspace_evidence: Record<string, unknown>;
+  transport_evidence: Record<string, unknown>;
+  reason: "NO_MEANINGFUL_PROGRESS";
+  created_at: string;
 };
 
 type JsonRpcMessage = {
@@ -120,6 +191,74 @@ function artifactPath(
     getRoundDir(getChiefRunDir(projectRoot, runId), round),
     "goal_worker.json"
   );
+}
+
+function livenessPath(
+  projectRoot: string,
+  runId: string,
+  round: number
+): string {
+  return join(
+    getRoundDir(getChiefRunDir(projectRoot, runId), round),
+    "goal_liveness.json"
+  );
+}
+
+function stallPath(projectRoot: string, runId: string, round: number): string {
+  return join(
+    getRoundDir(getChiefRunDir(projectRoot, runId), round),
+    "goal_stall.json"
+  );
+}
+
+function workspaceEvidence(projectRoot: string): Record<string, unknown> {
+  try {
+    const status = execFileSync(
+      "git",
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      {
+        cwd: projectRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }
+    );
+    const head = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return {
+      head,
+      status,
+      fingerprint: createHash("sha256")
+        .update(`${head}\n${status}`)
+        .digest("hex"),
+    };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
+async function latestRoundProgress(
+  roundPath: string
+): Promise<string | undefined> {
+  try {
+    const entries = await readdir(roundPath);
+    let latest: number | undefined;
+    for (const name of entries) {
+      if (name === "goal_liveness.json" || name === "goal_stall.json") continue;
+      try {
+        const info = await stat(join(roundPath, name));
+        const time = info.mtimeMs;
+        if (latest === undefined || time > latest) latest = time;
+      } catch {
+        // A concurrently-created artifact is not a reason to fail liveness.
+      }
+    }
+    return latest === undefined ? undefined : new Date(latest).toISOString();
+  } catch {
+    return undefined;
+  }
 }
 
 function now(): string {
@@ -236,8 +375,9 @@ function parseGoalArtifact(value: unknown): GoalWorkerArtifact {
  * fallback is present.
  */
 export class NativeCodexGoalTransport implements GoalTransport {
-  private readonly child: ChildProcessWithoutNullStreams;
-  private readonly lines: Interface;
+  private child: ChildProcessWithoutNullStreams;
+  private lines!: Interface;
+  private readonly binary: string;
   private readonly pending = new Map<
     number,
     {
@@ -248,9 +388,21 @@ export class NativeCodexGoalTransport implements GoalTransport {
   private readonly notifications = new Set<(message: JsonRpcMessage) => void>();
   private nextId = 1;
   private closed = false;
+  private disconnected = false;
+  private readonly disconnectListeners = new Set<() => void>();
   private stderr = "";
 
-  private constructor(child: ChildProcessWithoutNullStreams) {
+  private constructor(
+    child: ChildProcessWithoutNullStreams,
+    binary = process.env.RALPH_CODEX_BIN ?? "codex"
+  ) {
+    this.binary = binary;
+    this.child = child;
+    this.attachChild(child);
+  }
+
+  private attachChild(child: ChildProcessWithoutNullStreams): void {
+    this.lines?.close();
     this.child = child;
     this.lines = createInterface({ input: child.stdout });
     this.lines.on("line", (line) => {
@@ -283,10 +435,12 @@ export class NativeCodexGoalTransport implements GoalTransport {
     });
     const fail = (): void => {
       if (this.closed) return;
+      this.disconnected = true;
       const suffix = this.stderr ? `: ${this.stderr.trim()}` : "";
       for (const waiter of this.pending.values())
         waiter.reject(new Error(`Codex app-server exited${suffix}`));
       this.pending.clear();
+      for (const listener of this.disconnectListeners) listener();
     };
     child.once("error", fail);
     child.once("exit", fail);
@@ -298,7 +452,25 @@ export class NativeCodexGoalTransport implements GoalTransport {
     const child = spawn(binary, ["app-server", "--listen", "stdio://"], {
       stdio: ["pipe", "pipe", "pipe"],
     });
-    return new NativeCodexGoalTransport(child);
+    return new NativeCodexGoalTransport(child, binary);
+  }
+
+  private async reconnect(threadId: string): Promise<void> {
+    if (this.closed) throw new Error("Codex app-server transport is closed");
+    const child = spawn(this.binary, ["app-server", "--listen", "stdio://"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    this.attachChild(child);
+    this.disconnected = false;
+    try {
+      await this.initialize();
+      await this.resumeThread(threadId);
+    } catch (error) {
+      this.disconnected = true;
+      throw new Error(
+        `Codex app-server reconnect failed: ${errorMessage(error)}`
+      );
+    }
   }
 
   private request(
@@ -307,6 +479,10 @@ export class NativeCodexGoalTransport implements GoalTransport {
   ): Promise<Record<string, unknown>> {
     if (this.closed)
       return Promise.reject(new Error("Codex app-server transport is closed"));
+    if (this.disconnected)
+      return Promise.reject(
+        new Error("Codex app-server transport disconnected")
+      );
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -365,52 +541,150 @@ export class NativeCodexGoalTransport implements GoalTransport {
 
   async waitForGoal(
     threadId: string,
-    timeoutMs: number
+    timeoutMs: number,
+    options: GoalWaitOptions = {}
   ): Promise<GoalWaitResult> {
-    return new Promise((resolve, reject) => {
-      let activationSeen = false;
-      let text = "";
-      let timer: NodeJS.Timeout | undefined;
-      const finish = (result?: GoalWaitResult, error?: Error): void => {
-        if (timer) clearTimeout(timer);
-        this.notifications.delete(listener);
-        if (error) reject(error);
-        else resolve(result as GoalWaitResult);
-      };
-      const listener = (message: JsonRpcMessage): void => {
-        if (message.method === "item/agentMessage/delta") {
-          const params = message.params ?? {};
-          if (
-            typeof params.threadId === "string" &&
-            params.threadId !== threadId
-          )
-            return;
-          const delta = params.delta;
-          if (typeof delta === "string") text += delta;
-        }
-        if (message.method !== "thread/goal/updated") return;
+    const clock = options.now ?? Date.now;
+    const sleep =
+      options.sleep ??
+      ((milliseconds: number) =>
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, milliseconds);
+          timer.unref?.();
+        }));
+    const pollInterval = Math.max(100, options.pollIntervalMs ?? 30_000);
+    const deadline = clock() + timeoutMs;
+    let activationSeen = false;
+    let text = "";
+    let observedTerminal: GoalRecord | undefined;
+    let lastAgentMessageAt: string | undefined;
+    let lastMeaningfulProgressAt = clock();
+    let reconnectAttempts = 0;
+    let wake: (() => void) | undefined;
+    const listener = (message: JsonRpcMessage): void => {
+      if (message.method === "item/agentMessage/delta") {
         const params = message.params ?? {};
-        if (params.threadId !== threadId) return;
-        const goal = params.goal;
-        if (!goal || typeof goal !== "object") return;
-        const record = requireGoal(goal, "thread/goal/updated");
-        if (record.status === "active") activationSeen = true;
-        if (record.status !== "active")
-          finish({ goal: record, activationSeen, text });
-      };
-      this.notifications.add(listener);
-      timer = setTimeout(
-        () =>
-          finish(
-            undefined,
-            new Error(
-              "Native Goal Worker timed out waiting for terminal status"
+        if (typeof params.threadId === "string" && params.threadId !== threadId)
+          return;
+        const delta = params.delta;
+        if (typeof delta === "string") {
+          text += delta;
+          lastAgentMessageAt = new Date(clock()).toISOString();
+          lastMeaningfulProgressAt = clock();
+          void options.onAgentMessage?.(lastAgentMessageAt, delta);
+        }
+      }
+      if (message.method !== "thread/goal/updated") return;
+      const params = message.params ?? {};
+      if (params.threadId !== threadId) return;
+      const goal = params.goal;
+      if (!goal || typeof goal !== "object") return;
+      const record = requireGoal(goal, "thread/goal/updated");
+      if (record.status === "active") activationSeen = true;
+      else observedTerminal = record;
+      wake?.();
+    };
+    const disconnected = (): void => wake?.();
+    this.notifications.add(listener);
+    this.disconnectListeners.add(disconnected);
+    try {
+      while (true) {
+        if (observedTerminal)
+          return { goal: observedTerminal, activationSeen, text };
+        const remaining = deadline - clock();
+        if (remaining <= 0)
+          throw new Error(
+            "Native Goal Worker timed out waiting for terminal status"
+          );
+        if (this.disconnected) {
+          if (reconnectAttempts >= 1)
+            throw new Error("NATIVE_GOAL_TRANSPORT_DISCONNECTED");
+          reconnectAttempts += 1;
+          await this.reconnect(threadId);
+        }
+        let goal: GoalRecord | null;
+        try {
+          goal = await this.getGoal(threadId);
+        } catch (error) {
+          if (!this.disconnected) throw error;
+          if (reconnectAttempts >= 1)
+            throw new Error("NATIVE_GOAL_TRANSPORT_DISCONNECTED");
+          reconnectAttempts += 1;
+          await this.reconnect(threadId);
+          goal = await this.getGoal(threadId);
+        }
+        if (!goal) {
+          await sleep(Math.min(pollInterval, remaining));
+          continue;
+        }
+        if (goal.status === "active") activationSeen = true;
+        if (goal.status !== "active") return { goal, activationSeen, text };
+        if (await options.progressProbe?.()) lastMeaningfulProgressAt = clock();
+        await options.onObservation?.({
+          observedAt: new Date(clock()).toISOString(),
+          goal,
+          transportConnected: !this.disconnected,
+          agentMessageAt: lastAgentMessageAt,
+        });
+        const stallAfterMs = options.stallAfterMs;
+        if (
+          stallAfterMs !== undefined &&
+          stallAfterMs >= 0 &&
+          clock() - lastMeaningfulProgressAt >= stallAfterMs
+        ) {
+          const stallDurationMs = clock() - lastMeaningfulProgressAt;
+          await options.onStall?.({
+            goal,
+            lastMeaningfulProgressAt: new Date(
+              lastMeaningfulProgressAt
+            ).toISOString(),
+            stallDurationMs,
+          });
+          try {
+            const paused = await this.pauseGoal(threadId);
+            const confirmed = await this.getGoal(threadId);
+            if (!confirmed || confirmed.status !== "paused")
+              throw new Error("Goal pause could not be confirmed");
+            throw Object.assign(
+              new Error("GOAL_STALLED:NO_MEANINGFUL_PROGRESS"),
+              { code: "GOAL_STALLED", goal: paused, stallDurationMs }
+            );
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message.startsWith("GOAL_STALLED:")
             )
-          ),
-        timeoutMs
-      );
-      timer.unref?.();
+              throw error;
+            throw new Error(
+              `GOAL_STALLED_PAUSE_UNCONFIRMED: ${errorMessage(error)}`
+            );
+          }
+        }
+        const interval = Math.min(pollInterval, deadline - clock());
+        if (interval <= 0) continue;
+        await Promise.race([
+          sleep(interval),
+          new Promise<void>((resolve) => {
+            wake = resolve;
+          }),
+        ]);
+        wake = undefined;
+      }
+    } finally {
+      this.notifications.delete(listener);
+      this.disconnectListeners.delete(disconnected);
+    }
+  }
+
+  async pauseGoal(threadId: string): Promise<GoalRecord> {
+    const result = await this.request("thread/goal/set", {
+      threadId,
+      status: "paused",
     });
+    const goal = statusFromGoal(result);
+    if (goal.threadId !== threadId || goal.status !== "paused")
+      throw new Error("Goal pause response did not confirm paused status");
+    return goal;
   }
 
   async close(): Promise<void> {
@@ -429,6 +703,24 @@ export type GoalWorkerResult = {
   humanRequired?: boolean;
 };
 
+/** Explicitly pause and verify a Goal during an intentional controller stop. */
+export async function pauseGoalForShutdown(
+  transport: GoalTransport,
+  threadId: string
+): Promise<GoalRecord> {
+  if (!transport.pauseGoal)
+    throw new Error("Goal transport cannot pause a Goal for shutdown");
+  const paused = await transport.pauseGoal(threadId);
+  const confirmed = await transport.getGoal(threadId);
+  if (
+    !confirmed ||
+    confirmed.threadId !== threadId ||
+    confirmed.status !== "paused"
+  )
+    throw new Error("Goal pause could not be confirmed during shutdown");
+  return paused;
+}
+
 export async function runNativeGoalWorker(options: {
   projectRoot: string;
   runId: string;
@@ -439,6 +731,10 @@ export async function runNativeGoalWorker(options: {
   reasoningEffort?: string;
   packageDir?: string;
   goalTimeoutMs?: number;
+  goalPollIntervalMs?: number;
+  goalStallMs?: number;
+  livenessNow?: () => number;
+  livenessSleep?: (milliseconds: number) => Promise<void>;
   transport?: GoalTransport;
 }): Promise<GoalWorkerResult> {
   const path = artifactPath(options.projectRoot, options.runId, options.round);
@@ -474,6 +770,167 @@ export async function runNativeGoalWorker(options: {
   const transport =
     options.transport ?? (await NativeCodexGoalTransport.create());
   const started = existing?.started_at ?? now();
+  const livenessFile = livenessPath(
+    options.projectRoot,
+    options.runId,
+    options.round
+  );
+  const clock = options.livenessNow ?? Date.now;
+  let lastWorkspace = JSON.stringify(workspaceEvidence(options.projectRoot));
+  let lastWorkspaceChangeAt = now();
+  let lastArtifactProgress: string | undefined;
+  let lastAgentMessageAt: string | undefined;
+  let lastGoalStatus: GoalStatus = "active";
+  let lastStatusChangeAt = now();
+  const persistLiveness = async (
+    goal: GoalRecord,
+    connected: boolean
+  ): Promise<void> => {
+    const observedAt = new Date(clock()).toISOString();
+    const workspace = JSON.stringify(workspaceEvidence(options.projectRoot));
+    if (workspace !== lastWorkspace) {
+      lastWorkspace = workspace;
+      lastWorkspaceChangeAt = observedAt;
+    }
+    if (goal.status !== lastGoalStatus) {
+      lastGoalStatus = goal.status;
+      lastStatusChangeAt = observedAt;
+    }
+    const artifactProgress = await latestRoundProgress(
+      getRoundDir(
+        getChiefRunDir(options.projectRoot, options.runId),
+        options.round
+      )
+    );
+    await writeJsonAtomic(livenessFile, {
+      version: 1,
+      run_id: options.runId,
+      round: options.round,
+      task_id: options.taskId,
+      thread_id: goal.threadId,
+      last_reconcile_at: observedAt,
+      last_goal_status: goal.status,
+      last_status_change_at: lastStatusChangeAt,
+      ...(lastAgentMessageAt
+        ? { last_agent_message_at: lastAgentMessageAt }
+        : {}),
+      last_workspace_change_at: lastWorkspaceChangeAt,
+      ...(artifactProgress
+        ? { last_artifact_change_at: artifactProgress }
+        : {}),
+      ...(goal.tokensUsed !== undefined
+        ? { last_tokens_used: goal.tokensUsed }
+        : {}),
+      ...(goal.timeUsedSeconds !== undefined
+        ? { last_time_used_seconds: goal.timeUsedSeconds }
+        : {}),
+      transport_connected: connected,
+      transport_last_seen_at: observedAt,
+      stall_state: "healthy",
+      updated_at: observedAt,
+    });
+  };
+  const waitOptions: GoalWaitOptions = {
+    pollIntervalMs: options.goalPollIntervalMs,
+    stallAfterMs: options.goalStallMs ?? 15 * 60 * 1000,
+    now: options.livenessNow,
+    sleep: options.livenessSleep,
+    onAgentMessage: async (observedAt) => {
+      lastAgentMessageAt = observedAt;
+    },
+    onObservation: async (observation) => {
+      await persistLiveness(observation.goal, observation.transportConnected);
+    },
+    progressProbe: async () => {
+      const currentWorkspace = JSON.stringify(
+        workspaceEvidence(options.projectRoot)
+      );
+      let changed = false;
+      if (currentWorkspace !== lastWorkspace) {
+        lastWorkspace = currentWorkspace;
+        lastWorkspaceChangeAt = new Date(clock()).toISOString();
+        changed = true;
+      }
+      const artifactProgress = await latestRoundProgress(
+        getRoundDir(
+          getChiefRunDir(options.projectRoot, options.runId),
+          options.round
+        )
+      );
+      if (artifactProgress && artifactProgress !== lastArtifactProgress) {
+        lastArtifactProgress = artifactProgress;
+        changed = true;
+      }
+      return changed;
+    },
+    onStall: async ({ goal, lastMeaningfulProgressAt, stallDurationMs }) => {
+      const observedAt = new Date(clock()).toISOString();
+      await writeJsonAtomic(livenessFile, {
+        version: 1,
+        run_id: options.runId,
+        round: options.round,
+        task_id: options.taskId,
+        thread_id: goal.threadId,
+        last_reconcile_at: observedAt,
+        last_goal_status: goal.status,
+        last_status_change_at: lastStatusChangeAt,
+        ...(lastAgentMessageAt
+          ? { last_agent_message_at: lastAgentMessageAt }
+          : {}),
+        last_workspace_change_at: lastWorkspaceChangeAt,
+        ...(goal.tokensUsed !== undefined
+          ? { last_tokens_used: goal.tokensUsed }
+          : {}),
+        ...(goal.timeUsedSeconds !== undefined
+          ? { last_time_used_seconds: goal.timeUsedSeconds }
+          : {}),
+        transport_connected: true,
+        transport_last_seen_at: observedAt,
+        stall_state: "stalled",
+        stall_reason: "NO_MEANINGFUL_PROGRESS",
+        updated_at: observedAt,
+      } satisfies GoalLivenessArtifact);
+      await writeJsonAtomic(
+        stallPath(options.projectRoot, options.runId, options.round),
+        {
+          version: 1,
+          run_id: options.runId,
+          round: options.round,
+          task_id: options.taskId,
+          thread_id: goal.threadId,
+          goal_status: goal.status,
+          ...(goal.tokensUsed !== undefined
+            ? { tokensUsed: goal.tokensUsed }
+            : {}),
+          ...(goal.timeUsedSeconds !== undefined
+            ? { timeUsedSeconds: goal.timeUsedSeconds }
+            : {}),
+          last_meaningful_progress_at: lastMeaningfulProgressAt,
+          stall_duration_seconds: stallDurationMs / 1000,
+          workspace_evidence: workspaceEvidence(options.projectRoot),
+          transport_evidence: { connected: true },
+          reason: "NO_MEANINGFUL_PROGRESS",
+          created_at: observedAt,
+        } satisfies GoalStallArtifact
+      );
+    },
+  };
+  await writeJsonAtomic(livenessFile, {
+    version: 1,
+    run_id: options.runId,
+    round: options.round,
+    task_id: options.taskId,
+    thread_id: existing?.thread_id ?? "pending",
+    last_reconcile_at: now(),
+    last_goal_status: "active",
+    last_status_change_at: now(),
+    last_workspace_change_at: lastWorkspaceChangeAt,
+    transport_connected: true,
+    transport_last_seen_at: now(),
+    stall_state: "healthy",
+    updated_at: now(),
+  } satisfies GoalLivenessArtifact);
+  let activeThreadId = existing?.thread_id;
   try {
     await transport.initialize();
     let threadId = existing?.thread_id;
@@ -490,7 +947,8 @@ export async function runNativeGoalWorker(options: {
       if (!goal) {
         const wait = transport.waitForGoal(
           threadId,
-          options.goalTimeoutMs ?? 86_400_000
+          options.goalTimeoutMs ?? 86_400_000,
+          waitOptions
         );
         const set = validateGoalBinding(
           await transport.setGoal(threadId, options.prompt),
@@ -550,7 +1008,8 @@ export async function runNativeGoalWorker(options: {
         if (goal.status === "active") {
           const waited = await transport.waitForGoal(
             threadId,
-            options.goalTimeoutMs ?? 86_400_000
+            options.goalTimeoutMs ?? 86_400_000,
+            waitOptions
           );
           goal = validateGoalBinding(
             waited.goal,
@@ -590,6 +1049,7 @@ export async function runNativeGoalWorker(options: {
         threadSource: "ralph_v3_goal_worker",
       });
       threadId = startedThread.threadId;
+      activeThreadId = threadId;
       await writeJsonAtomic(path, {
         version: 1,
         run_id: options.runId,
@@ -604,7 +1064,8 @@ export async function runNativeGoalWorker(options: {
       } satisfies GoalWorkerArtifact);
       const wait = transport.waitForGoal(
         threadId,
-        options.goalTimeoutMs ?? 86_400_000
+        options.goalTimeoutMs ?? 86_400_000,
+        waitOptions
       );
       const set = validateGoalBinding(
         await transport.setGoal(threadId, options.prompt),
@@ -649,6 +1110,7 @@ export async function runNativeGoalWorker(options: {
         meta: {},
         error: "Native Goal returned no terminal status",
       };
+    await persistLiveness(goal, true);
     if (!activationSeen)
       return {
         text: "",
@@ -704,6 +1166,73 @@ export async function runNativeGoalWorker(options: {
       goalStatus: goal.status,
     };
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith("GOAL_STALLED:")) {
+      const stalledGoal = (error as Error & { goal?: GoalRecord }).goal;
+      const observedAt = new Date(clock()).toISOString();
+      await writeJsonAtomic(livenessFile, {
+        version: 1,
+        run_id: options.runId,
+        round: options.round,
+        task_id: options.taskId,
+        thread_id: stalledGoal?.threadId ?? activeThreadId ?? "unknown",
+        last_reconcile_at: observedAt,
+        last_goal_status: stalledGoal?.status ?? "paused",
+        last_status_change_at: lastStatusChangeAt,
+        ...(lastAgentMessageAt
+          ? { last_agent_message_at: lastAgentMessageAt }
+          : {}),
+        last_workspace_change_at: lastWorkspaceChangeAt,
+        ...(stalledGoal?.tokensUsed !== undefined
+          ? { last_tokens_used: stalledGoal.tokensUsed }
+          : {}),
+        ...(stalledGoal?.timeUsedSeconds !== undefined
+          ? { last_time_used_seconds: stalledGoal.timeUsedSeconds }
+          : {}),
+        transport_connected: true,
+        transport_last_seen_at: observedAt,
+        stall_state: "stalled",
+        stall_reason: "NO_MEANINGFUL_PROGRESS",
+        updated_at: observedAt,
+      } satisfies GoalLivenessArtifact);
+      return {
+        text: "",
+        meta: {
+          goalStatus: stalledGoal?.status ?? "paused",
+          technicalFailureKind: "GOAL_STALLED",
+          stallDurationMs: (error as Error & { stallDurationMs?: number })
+            .stallDurationMs,
+        },
+        goalStatus: stalledGoal?.status ?? "paused",
+        humanRequired: false,
+        error: error.message,
+      };
+    }
+    if (
+      error instanceof Error &&
+      (error.message.includes("DISCONNECTED") ||
+        error.message.includes("reconnect failed"))
+    ) {
+      const observedAt = new Date(clock()).toISOString();
+      await writeJsonAtomic(livenessFile, {
+        version: 1,
+        run_id: options.runId,
+        round: options.round,
+        task_id: options.taskId,
+        thread_id: activeThreadId ?? "unknown",
+        last_reconcile_at: observedAt,
+        last_goal_status: lastGoalStatus,
+        last_status_change_at: lastStatusChangeAt,
+        ...(lastAgentMessageAt
+          ? { last_agent_message_at: lastAgentMessageAt }
+          : {}),
+        last_workspace_change_at: lastWorkspaceChangeAt,
+        transport_connected: false,
+        transport_last_seen_at: observedAt,
+        stall_state: "suspect",
+        stall_reason: "TRANSPORT_DISCONNECTED",
+        updated_at: observedAt,
+      } satisfies GoalLivenessArtifact);
+    }
     return {
       text: "",
       meta: {},

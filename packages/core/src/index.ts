@@ -161,12 +161,17 @@ export {
 export {
   GOAL_STATUSES,
   NativeCodexGoalTransport,
+  pauseGoalForShutdown,
   runNativeGoalWorker,
   type GoalStatus,
   type GoalRecord,
   type GoalTransport,
   type GoalWaitResult,
+  type GoalWaitOptions,
+  type GoalObservation,
   type GoalWorkerArtifact,
+  type GoalLivenessArtifact,
+  type GoalStallArtifact,
   type GoalWorkerResult,
 } from "./v3/goal-worker.js";
 export {
