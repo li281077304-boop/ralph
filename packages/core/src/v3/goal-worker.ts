@@ -6,6 +6,7 @@ import {
 } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import { readFile, stat, readdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { writeJsonAtomic } from "./atomic-json.js";
@@ -227,11 +228,52 @@ function workspaceEvidence(projectRoot: string): Record<string, unknown> {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
+    const diff = execFileSync("git", ["diff", "--no-ext-diff"], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const stagedDiff = execFileSync(
+      "git",
+      ["diff", "--cached", "--no-ext-diff"],
+      {
+        cwd: projectRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }
+    );
+    const untrackedFiles = execFileSync(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      {
+        cwd: projectRoot,
+        encoding: "buffer",
+        stdio: ["ignore", "pipe", "ignore"],
+      }
+    );
+    const untrackedHash = createHash("sha256");
+    for (const file of untrackedFiles
+      .toString("utf8")
+      .split("\0")
+      .filter(Boolean)) {
+      untrackedHash.update(file);
+      try {
+        untrackedHash.update(readFileSync(join(projectRoot, file)));
+      } catch {
+        untrackedHash.update("<unreadable>");
+      }
+    }
+    const untrackedDigest = untrackedHash.digest("hex");
     return {
       head,
       status,
+      diff_hash: createHash("sha256").update(diff).digest("hex"),
+      staged_diff_hash: createHash("sha256").update(stagedDiff).digest("hex"),
+      untracked_hash: untrackedDigest,
       fingerprint: createHash("sha256")
-        .update(`${head}\n${status}`)
+        .update(
+          `${head}\n${status}\n${diff}\n${stagedDiff}\n${untrackedDigest}`
+        )
         .digest("hex"),
     };
   } catch {
