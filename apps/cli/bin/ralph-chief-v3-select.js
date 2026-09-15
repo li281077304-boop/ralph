@@ -8,12 +8,17 @@ import { fileURLToPath } from "node:url";
 import {
   applySelectDecision,
   acquireActiveWriterLock,
+  buildRecentDevlogContext,
   getChiefRunDir,
   loadChiefConfig,
   loadRunState,
   prepareSelectHandoff,
   parseChiefSelectDecision,
   releaseActiveWriterLock,
+  createDevlogHandoff,
+  validateDevlogHandoff,
+  writeDevlogDecision,
+  writeDevlogResult,
 } from "@daonhan/ralph-core";
 import { runExternalChiefGuiRoundtrip } from "./ralph-gui-chief-bridge.js";
 import { extractMarkedJsonBlock } from "./ralph-gui-bridge.js";
@@ -153,7 +158,57 @@ export async function runV3SelectTransport(options) {
     const transport =
       options.transport ??
       ((value) => runExternalChiefGuiRoundtrip(options.guiConfig, value));
-    const result = await transport(request);
+    let devlogEntry;
+    if (options.devlogRoot) {
+      devlogEntry = await createDevlogHandoff({
+        root: options.devlogRoot,
+        slug: `chief-select-round-${runState.round}`,
+        runId,
+        round: runState.round,
+        taskId: runState.current_task_id ?? undefined,
+        handoffHash: preparation.handoff.handoff_hash,
+        context: [
+          "CONFIRMED FACT",
+          `run_id: ${runId}`,
+          `round: ${runState.round}`,
+          "DECISION",
+          "Chief SELECT must receive a durable handoff before invocation.",
+          "UNKNOWN",
+          await buildRecentDevlogContext(options.devlogRoot),
+        ].join("\n"),
+        agentTask: request.message,
+      });
+      await validateDevlogHandoff(devlogEntry);
+    }
+    let result;
+    try {
+      result = await transport(request);
+    } catch (error) {
+      if (devlogEntry)
+        await writeDevlogResult(
+          devlogEntry,
+          [
+            "TESTED",
+            `result: ${error instanceof Error ? error.message : String(error)}`,
+            "chief_route: SELECT",
+            `run_id: ${runId}`,
+            `round: ${runState.round}`,
+            "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+          ].join("\n")
+        );
+      throw error;
+    }
+    if (devlogEntry)
+      await writeDevlogResult(
+        devlogEntry,
+        [
+          "TESTED",
+          "chief_route: SELECT",
+          `run_id: ${runId}`,
+          `round: ${runState.round}`,
+          "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+        ].join("\n")
+      );
     if (!result || typeof result.reply !== "string")
       throw new Error("Chief transport returned no reply");
     const rawDecision = extractMarkedJsonBlock(
@@ -163,6 +218,17 @@ export async function runV3SelectTransport(options) {
     );
     const decision = parseChiefSelectDecision(rawDecision);
     const applied = await applySelectDecision(projectRoot, runId, decision);
+    if (devlogEntry)
+      await writeDevlogDecision(
+        devlogEntry,
+        [
+          "CONFIRMED CONCLUSION",
+          `action: ${decision.action}`,
+          `selected_task_id: ${decision.selected_task_id ?? "none"}`,
+          `run_id: ${runId}`,
+          `round: ${runState.round}`,
+        ].join("\n")
+      );
     return { ...applied, recovered: false, guiCalls: 1 };
   } finally {
     await releaseActiveWriterLock(projectRoot, lock);
@@ -195,6 +261,7 @@ export async function main(argv = process.argv.slice(2)) {
   const result = await runV3SelectTransport({
     projectRoot: args.repo,
     runId: args.run_id,
+    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? process.cwd(),
     guiConfig: config.gui_bridge,
   });
   process.stdout.write(

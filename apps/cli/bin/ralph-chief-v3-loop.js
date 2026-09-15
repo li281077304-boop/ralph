@@ -128,6 +128,7 @@ export async function runV3BigLoop(options) {
       runV3SelectTransport({
         projectRoot,
         runId,
+        devlogRoot: options.devlogRoot,
         guiConfig: config.gui_bridge,
         ...(codexTransport
           ? { transport: codexTransport("codex-chief-select.ndjson") }
@@ -137,12 +138,14 @@ export async function runV3BigLoop(options) {
       runV3WorkSlice({
         projectRoot,
         runId,
+        devlogRoot: options.devlogRoot,
         config: workConfig(config),
       }),
     review: () =>
       runV3ReviewTransport({
         projectRoot,
         runId,
+        devlogRoot: options.devlogRoot,
         guiConfig: config.gui_bridge,
         reviewStage: "chief",
         ...(codexTransport
@@ -163,6 +166,7 @@ export async function runV3BigLoop(options) {
       runV3ReviewTransport({
         projectRoot,
         runId,
+        devlogRoot: options.devlogRoot,
         guiConfig: config.gui_bridge,
         reviewStage: "final",
         ...(codexTransport
@@ -355,6 +359,7 @@ export async function main(argv = process.argv.slice(2)) {
     projectRoot: args.repo,
     runId: args.run_id,
     config,
+    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? process.cwd(),
     onProgress: ({ round, message }) => {
       if (message) process.stdout.write(`[第 ${round} 轮] ${message}\n`);
     },

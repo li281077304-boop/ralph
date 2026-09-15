@@ -158,6 +158,13 @@ Shell resolution lives in `resolveShell()` in `render.ts`: Linux/macOS → `/bin
 - Apply `.codex/AGENT.md` (think first, simplicity, surgical changes, goal-driven). Make only changes the user asked for; match existing style; prefer smallest correct change; push back on over-engineering; state a brief plan + success criteria for non-trivial work.
 - When a change affects architecture, interfaces, or invariants, update the relevant docs before finishing. Delegate the docs pass to a sub-agent.
 
+## Durable development handoff
+
+- Every formal code-changing task must create a Git-tracked `devlog/<date>/<sequence>-<slug>/` entry before invoking a Worker or Chief.
+- `context.md` must distinguish user observation, confirmed fact, technical assessment, decision, and unknowns. `agent-task.md` must contain the exact invocation text and `task-hash.txt` its SHA-256.
+- The controller must read back and validate the handoff before spawning an Agent. If writing or validating it fails, fail closed with zero Agent invocations.
+- Runtime `.ralph/` artifacts remain separate from long-lived `devlog/` history. Never copy raw logs into the devlog.
+
 ## Imported Claude Cowork project instructions
 
 Ralph — Autonomous Coding Agent Loop

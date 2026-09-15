@@ -474,6 +474,7 @@ export async function runWorkerPhase(options: {
   projectRoot: string;
   runId: string;
   config: V3WorkerConfig;
+  devlogRoot?: string;
   runAgent?: V3WorkerRunner;
   /** Test seam for a protocol-level fake; production leaves this undefined. */
   goalTransport?: GoalTransport;
@@ -599,6 +600,7 @@ export async function runWorkerPhase(options: {
         model: options.config.worker.model,
         reasoningEffort: options.config.worker.reasoning_effort,
         packageDir: options.config.package_dir,
+        devlogRoot: options.devlogRoot,
         transport: options.goalTransport,
       });
       worker = goal as typeof worker;

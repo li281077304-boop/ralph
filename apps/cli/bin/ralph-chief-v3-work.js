@@ -28,6 +28,7 @@ export async function main(argv = process.argv.slice(2)) {
   const result = await runV3WorkSlice({
     projectRoot: args.repo,
     runId: args.run_id,
+    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? process.cwd(),
     config: {
       worker: config.worker,
       commands: config.commands,

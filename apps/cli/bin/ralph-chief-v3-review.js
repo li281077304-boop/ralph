@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import {
   acquireActiveWriterLock,
   applyReviewDecision,
+  buildRecentDevlogContext,
+  createDevlogHandoff,
   getChiefRunDir,
   loadChiefConfig,
   loadRunState,
@@ -15,6 +17,9 @@ import {
   prepareReviewHandoff,
   releaseActiveWriterLock,
   verifyReviewCheckpoint,
+  validateDevlogHandoff,
+  writeDevlogDecision,
+  writeDevlogResult,
   writeJsonAtomic,
 } from "@daonhan/ralph-core";
 import { runExternalChiefGuiRoundtrip } from "./ralph-gui-chief-bridge.js";
@@ -230,10 +235,45 @@ export async function runV3ReviewTransport(options) {
       round: runState.round,
       handoffHash: preparation.handoff.handoff_hash,
     };
+    let devlogEntry;
+    if (options.devlogRoot) {
+      devlogEntry = await createDevlogHandoff({
+        root: options.devlogRoot,
+        slug: `chief-${runState.phase.toLowerCase()}-round-${runState.round}`,
+        runId,
+        round: runState.round,
+        taskId: runState.current_task_id ?? undefined,
+        handoffHash: preparation.handoff.handoff_hash,
+        context: [
+          "CONFIRMED FACT",
+          `run_id: ${runId}`,
+          `round: ${runState.round}`,
+          `phase: ${runState.phase}`,
+          "DECISION",
+          "Chief review must receive a durable handoff before invocation.",
+          "UNKNOWN",
+          await buildRecentDevlogContext(options.devlogRoot),
+        ].join("\n"),
+        agentTask: transportRequest.message,
+      });
+      await validateDevlogHandoff(devlogEntry);
+    }
     let result;
     try {
       result = await transport(transportRequest);
     } catch (error) {
+      if (devlogEntry)
+        await writeDevlogResult(
+          devlogEntry,
+          [
+            "TESTED",
+            `result: ${error instanceof Error ? error.message : String(error)}`,
+            `chief_route: ${runState.phase}`,
+            `run_id: ${runId}`,
+            `round: ${runState.round}`,
+            "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+          ].join("\n")
+        );
       await persistTransportEvidence(
         projectRoot,
         runId,
@@ -250,6 +290,17 @@ export async function runV3ReviewTransport(options) {
       preparation.handoff.handoff_hash,
       result
     );
+    if (devlogEntry)
+      await writeDevlogResult(
+        devlogEntry,
+        [
+          "TESTED",
+          `chief_route: ${runState.phase}`,
+          `run_id: ${runId}`,
+          `round: ${runState.round}`,
+          "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+        ].join("\n")
+      );
     if (!result || typeof result.reply !== "string")
       throw new Error("Chief transport returned no reply");
     const raw = extractMarkedJsonBlock(
@@ -269,6 +320,17 @@ export async function runV3ReviewTransport(options) {
       resolveRemoteUrl,
       effectiveReviewStage
     );
+    if (devlogEntry)
+      await writeDevlogDecision(
+        devlogEntry,
+        [
+          "CONFIRMED CONCLUSION",
+          `action: ${decision.action}`,
+          `review_stage: ${effectiveReviewStage}`,
+          `run_id: ${runId}`,
+          `round: ${runState.round}`,
+        ].join("\n")
+      );
     return { ...applied, recovered: false, guiCalls: 1 };
   } finally {
     await releaseActiveWriterLock(projectRoot, lock);
@@ -301,6 +363,7 @@ export async function main(argv = process.argv.slice(2)) {
   const result = await runV3ReviewTransport({
     projectRoot: args.repo,
     runId: args.run_id,
+    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? process.cwd(),
     guiConfig: config.gui_bridge,
   });
   process.stdout.write(

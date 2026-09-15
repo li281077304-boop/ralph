@@ -190,6 +190,15 @@ export {
   type V3WorkResult,
 } from "./v3/work.js";
 export {
+  buildRecentDevlogContext,
+  createDevlogHandoff,
+  validateDevlogHandoff,
+  writeDevlogDecision,
+  writeDevlogResult,
+  type DevlogEntry,
+  type DevlogHandoffOptions,
+} from "./devlog.js";
+export {
   runIntegrationUatPhase,
   type IntegrationUatAction,
   type IntegrationUatOutcome,

@@ -21,6 +21,7 @@ export type V3WorkConfig = V3WorkerConfig & {
   gate_allowed_paths?: string[];
   required_clean_patterns?: string[];
   remote?: string;
+  devlogRoot?: string;
 };
 
 export type V3WorkResult = {
@@ -37,6 +38,7 @@ export async function runV3WorkSlice(options: {
   projectRoot: string;
   runId: string;
   config: V3WorkConfig;
+  devlogRoot?: string;
   runAgent?: V3WorkerRunner;
   /** Test seam for a protocol-level fake; production leaves this undefined. */
   goalTransport?: GoalTransport;
@@ -66,6 +68,7 @@ export async function runV3WorkSlice(options: {
               projectRoot,
               runId: options.runId,
               config: options.config,
+              devlogRoot: options.devlogRoot ?? options.config.devlogRoot,
               runAgent: options.runAgent,
               goalTransport: options.goalTransport,
             }),

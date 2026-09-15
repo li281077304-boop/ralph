@@ -10,6 +10,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { writeJsonAtomic } from "./atomic-json.js";
+import {
+  buildRecentDevlogContext,
+  createDevlogHandoff,
+  validateDevlogHandoff,
+  writeDevlogResult,
+  type DevlogEntry,
+} from "../devlog.js";
 import { getChiefRunDir, getRoundDir } from "./rounds.js";
 
 export const GOAL_STATUSES = [
@@ -778,6 +785,7 @@ export async function runNativeGoalWorker(options: {
   goalStallMs?: number;
   livenessNow?: () => number;
   livenessSleep?: (milliseconds: number) => Promise<void>;
+  devlogRoot?: string;
   transport?: GoalTransport;
 }): Promise<GoalWorkerResult> {
   const path = artifactPath(options.projectRoot, options.runId, options.round);
@@ -810,8 +818,34 @@ export async function runNativeGoalWorker(options: {
     }
   }
 
+  let devlogEntry: DevlogEntry | undefined;
+  if (options.devlogRoot) {
+    const recent = await buildRecentDevlogContext(options.devlogRoot);
+    devlogEntry = await createDevlogHandoff({
+      root: options.devlogRoot,
+      slug: `worker-${options.taskId}-round-${options.round}`,
+      runId: options.runId,
+      round: options.round,
+      taskId: options.taskId,
+      context: [
+        "CONFIRMED FACT",
+        `run_id: ${options.runId}`,
+        `round: ${options.round}`,
+        `task_id: ${options.taskId}`,
+        "TECHNICAL ASSESSMENT",
+        "Native Goal Worker invocation requires durable context before spawn.",
+        "UNKNOWN",
+        recent,
+      ].join("\n"),
+      agentTask: options.prompt,
+    });
+    await validateDevlogHandoff(devlogEntry);
+  }
   const transport =
     options.transport ?? (await NativeCodexGoalTransport.create());
+  const finishDevlog = async (result: string): Promise<void> => {
+    if (devlogEntry) await writeDevlogResult(devlogEntry, result);
+  };
   const started = existing?.started_at ?? now();
   const livenessFile = livenessPath(
     options.projectRoot,
@@ -1186,6 +1220,15 @@ export async function runNativeGoalWorker(options: {
       goal,
     } satisfies GoalWorkerArtifact;
     await writeJsonAtomic(path, evidence);
+    await finishDevlog(
+      [
+        "TESTED",
+        `goal_status: ${goal.status}`,
+        `run_id: ${options.runId}`,
+        `round: ${options.round}`,
+        "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+      ].join("\n")
+    );
     if (goal.status !== "complete") {
       return {
         text,
@@ -1237,6 +1280,16 @@ export async function runNativeGoalWorker(options: {
         stall_reason: "NO_MEANINGFUL_PROGRESS",
         updated_at: observedAt,
       } satisfies GoalLivenessArtifact);
+      await finishDevlog(
+        [
+          "TESTED",
+          "goal_status: paused",
+          "technical_result: GOAL_STALLED",
+          `run_id: ${options.runId}`,
+          `round: ${options.round}`,
+          "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+        ].join("\n")
+      );
       return {
         text: "",
         meta: {
@@ -1277,6 +1330,15 @@ export async function runNativeGoalWorker(options: {
         updated_at: observedAt,
       } satisfies GoalLivenessArtifact);
     }
+    await finishDevlog(
+      [
+        "TESTED",
+        `result: ${errorMessage(error)}`,
+        `run_id: ${options.runId}`,
+        `round: ${options.round}`,
+        "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+      ].join("\n")
+    );
     return {
       text: "",
       meta: {},
