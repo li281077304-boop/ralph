@@ -188,8 +188,11 @@ export async function runV3BigLoop(options) {
     });
   const hostFallbackFrom =
     config.chief_mode === "external" ? "external" : undefined;
-  const externalTransport = (request) =>
-    runExternalChiefGuiRoundtrip(config.gui_bridge, request);
+  let externalRound = null;
+  const externalTransport = (request) => {
+    externalRound = Number.isInteger(request?.round) ? request.round : null;
+    return runExternalChiefGuiRoundtrip(config.gui_bridge, request);
+  };
   const runChiefPhase = async (route, externalRun, hostRun) => {
     if (config.chief_mode === "codex") {
       await recordChiefRouteTelemetry(projectRoot, runId, {
@@ -213,7 +216,7 @@ export async function runV3BigLoop(options) {
         reasoning_effort: null,
         phase: route.toUpperCase(),
         run_id: runId,
-        round: null,
+        round: externalRound,
         duration: Date.now() - startedAt,
         input_tokens: null,
         cached_input_tokens: null,
@@ -236,7 +239,7 @@ export async function runV3BigLoop(options) {
         reasoning_effort: null,
         phase: route.toUpperCase(),
         run_id: runId,
-        round: null,
+        round: externalRound,
         duration: Date.now() - startedAt,
         input_tokens: null,
         cached_input_tokens: null,
