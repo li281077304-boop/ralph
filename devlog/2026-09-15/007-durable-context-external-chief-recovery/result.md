@@ -2,7 +2,7 @@
 
 - branch: `feature/ralph-v3-durable-context-and-external-chief-recovery`
 - base: `756eeb423187b545a640a787ce34fbe1dcad56b6`
-- head: pending final commit
+- head: `39a34cc1b1754d5baf17d338e461e5516cd209ad`
 - modified files: semantic Devlog validator/launcher integration, V3 Worker/Chief handoff gates, checkpoint Devlog exclusion, External Chief capability recovery and diagnostics.
 
 ## TESTED
