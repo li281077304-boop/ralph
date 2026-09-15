@@ -15,6 +15,7 @@ import {
 import { runV3SelectTransport } from "./ralph-chief-v3-select.js";
 import { runV3ReviewTransport } from "./ralph-chief-v3-review.js";
 import { createV3CodexChiefTransport } from "./ralph-chief-v3-codex.js";
+import { runV3RecoveryTransport } from "./ralph-chief-v3-recovery.js";
 
 function runStatePath(projectRoot, runId) {
   return join(getChiefRunDir(projectRoot, runId), "RUN_STATE.json");
@@ -91,6 +92,7 @@ function phaseMessage(state) {
   if (isWaitingFor(state, "review")) return "正在恢复外部总工审查";
   if (state.phase === "INTEGRATION_UAT") return "正在进行集成验收";
   if (state.phase === "FINAL_REVIEW") return "外部总工正在进行最终审查";
+  if (state.phase === "CHIEF_RECOVERY") return "技术总工正在恢复 Worker";
   return undefined;
 }
 function telemetryPhaseKey(phase) {
@@ -169,6 +171,19 @@ export async function runV3BigLoop(options) {
           ? { transport: codexTransport("codex-chief-final-review.ndjson") }
           : {}),
       }),
+    recovery: () =>
+      runV3RecoveryTransport({
+        projectRoot,
+        runId,
+        chiefConfig: config.chief ?? {
+          model: "gpt-5.6-sol",
+          reasoning_effort: "high",
+        },
+        timeout_seconds: config.timeout_seconds,
+        ...(codexTransport
+          ? { transport: codexTransport("codex-chief-recovery.ndjson") }
+          : {}),
+      }),
   };
   const maxIterations = options.maxIterations ?? config.max_iterations;
   const sleep =
@@ -243,6 +258,8 @@ export async function runV3BigLoop(options) {
       handler = handlers.uat;
     else if (state.phase === "FINAL_REVIEW" && state.status === "running")
       handler = handlers.finalReview;
+    else if (state.phase === "CHIEF_RECOVERY" && state.status === "running")
+      handler = handlers.recovery;
     else if (
       isWaitingFor(state, "review") &&
       state.waiting_handoff?.review_stage === "final" &&

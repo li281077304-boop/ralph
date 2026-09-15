@@ -178,7 +178,7 @@ describe("Chief V3 durable foundation", () => {
   });
 
   it("only dispatches registered runnable phases", async () => {
-    expect(PHASE_REGISTRY.size).toBe(11);
+    expect(PHASE_REGISTRY.size).toBe(12);
     expect(isRunnablePhase("SELECT")).toBe(true);
     expect(isRunnablePhase("DONE")).toBe(false);
     const seen: string[] = [];

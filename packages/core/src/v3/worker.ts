@@ -71,13 +71,17 @@ export async function resumeTechnicalBlockedWorker(options: {
   const root = resolve(options.projectRoot);
   const statePath = runPath(root, options.runId);
   const state = await loadRunState(statePath);
-  const technicalBlockedReason = state.failure_reason === "GOAL_STATUS:blocked";
+  const technicalBlockedReason =
+    state.failure_reason === "GOAL_STATUS:blocked" ||
+    (state.phase === "CHIEF_RECOVERY" && state.status === "running");
   const interruptedRecovery =
     state.failure_reason ===
     "WORKER requires a clean Git worktree before execution";
   if (
     (!technicalBlockedReason && !interruptedRecovery) ||
-    (state.phase !== "HUMAN_REQUIRED" && state.phase !== "FAILED")
+    (state.phase !== "HUMAN_REQUIRED" &&
+      state.phase !== "FAILED" &&
+      state.phase !== "CHIEF_RECOVERY")
   )
     throw new Error("run is not a resumable technical Goal block");
   const project = await loadProjectStateFromProject(root);
@@ -258,6 +262,12 @@ function failState(state: RunState, reason: string): RunState {
   };
 }
 
+function deterministicWorkerFailure(message: string): boolean {
+  return /(?:HOST_CODEX_NOT_FOUND|malformed|identity mismatch|state corruption|lock|policy violation|non-detached|current_task_id|Git worktree before execution|GOAL_STATUS:(?:paused|usageLimited|budgetLimited)|activat(?:e|ion))/i.test(
+    message
+  );
+}
+
 function cleanStatus(root: string): string {
   return maybeGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
 }
@@ -346,6 +356,36 @@ async function readPreviousReviewDecision(
   )
     throw new Error("Previous Review PATCH task continuity is invalid");
   return decision;
+}
+
+async function readPreviousRecoveryDecision(
+  root: string,
+  run: RunState,
+  task: ProjectTask
+): Promise<unknown> {
+  if (run.round <= 1) return undefined;
+  const path = artifact(
+    root,
+    run.run_id,
+    run.round - 1,
+    "recovery_decision.json"
+  );
+  try {
+    const value = JSON.parse(await readFile(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    if (
+      value.run_id !== run.run_id ||
+      value.round !== run.round - 1 ||
+      value.task_id !== task.id
+    )
+      throw new Error("recovery decision task continuity is invalid");
+    if (value.action === "RETRY_WORKER") return value;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return undefined;
 }
 
 async function readPreviousPhasePatch(
@@ -571,6 +611,10 @@ export async function runWorkerPhase(options: {
     decision === undefined && !reviewDecision
       ? await readPreviousPhasePatch(root, run, task)
       : undefined;
+  const recoveryDecision =
+    decision === undefined && !reviewDecision && !phasePatch
+      ? await readPreviousRecoveryDecision(root, run, task)
+      : undefined;
   const prompt = buildWorkerPrompt(
     project,
     run,
@@ -580,7 +624,12 @@ export async function runWorkerPhase(options: {
         ? { continuation: "REVIEW_PATCH", review_decision: reviewDecision }
         : phasePatch
           ? { continuation: "PHASE_PATCH", patch_context: phasePatch }
-          : undefined)
+          : recoveryDecision
+            ? {
+                continuation: "TECHNICAL_RECOVERY",
+                recovery_decision: recoveryDecision,
+              }
+            : undefined)
   );
   await writeTextAtomic(join(round, "worker_prompt.md"), `${prompt}\n`);
   const runner =
@@ -643,9 +692,115 @@ export async function runWorkerPhase(options: {
       return { runState: waiting, projectState: project, worker };
     }
     if (goalStatus === "blocked") {
-      const blocked = failState(run, "GOAL_STATUS:blocked");
-      await saveRunState(path, blocked);
-      return { runState: blocked, projectState: project, worker };
+      const afterBlocked = guard.snapshot();
+      const violations = guard.violations(before, afterBlocked);
+      if (afterBlocked.head !== before.head)
+        violations.push({ kind: "branch", path: "HEAD" });
+      if (violations.length) {
+        const failed = failState(
+          run,
+          `Worker policy violation: ${violations.map((item) => `${item.kind}:${item.path}`).join(", ")}`
+        );
+        await saveRunState(path, failed);
+        return {
+          runState: failed,
+          projectState: project,
+          worker,
+          snapshot: afterBlocked,
+        };
+      }
+      const blockedEvidence = {
+        version: 1,
+        run_id: run.run_id,
+        round: run.round,
+        task_id: task.id,
+        goal_status: "blocked",
+        human_required: false,
+        worker_error: worker.error,
+        worker_text: worker.text,
+        before: snapshotSummary(before),
+        after: snapshotSummary(afterBlocked),
+        changed_paths: guard.changedPaths(before, afterBlocked),
+        violations: [],
+        before_branch: before.branch,
+        after_branch: afterBlocked.branch,
+        before_workspace_fingerprint: workspaceFingerprint(before),
+        after_workspace_fingerprint: workspaceFingerprint(afterBlocked),
+        previous_context: decision ?? reviewDecision ?? phasePatch ?? {},
+        created_at: new Date().toISOString(),
+      };
+      await writeJsonAtomic(
+        artifact(root, run.run_id, run.round, "worker_block.json"),
+        blockedEvidence
+      );
+      const recovering: RunState = {
+        ...run,
+        phase: "CHIEF_RECOVERY",
+        status: "running",
+        updated_at: new Date().toISOString(),
+      };
+      await saveRunState(path, recovering);
+      return {
+        runState: recovering,
+        projectState: project,
+        worker,
+        snapshot: afterBlocked,
+      };
+    }
+    if (!deterministicWorkerFailure(worker.error)) {
+      const afterBlocked = guard.snapshot();
+      const violations = guard.violations(before, afterBlocked);
+      if (afterBlocked.head !== before.head)
+        violations.push({ kind: "branch", path: "HEAD" });
+      if (violations.length) {
+        const failed = failState(
+          run,
+          `Worker policy violation: ${violations.map((item) => `${item.kind}:${item.path}`).join(", ")}`
+        );
+        await saveRunState(path, failed);
+        return {
+          runState: failed,
+          projectState: project,
+          worker,
+          snapshot: afterBlocked,
+        };
+      }
+      await writeJsonAtomic(
+        artifact(root, run.run_id, run.round, "worker_block.json"),
+        {
+          version: 1,
+          run_id: run.run_id,
+          round: run.round,
+          task_id: task.id,
+          goal_status: "error",
+          human_required: false,
+          worker_error: worker.error,
+          worker_text: worker.text,
+          before: snapshotSummary(before),
+          after: snapshotSummary(afterBlocked),
+          changed_paths: guard.changedPaths(before, afterBlocked),
+          violations: [],
+          before_branch: before.branch,
+          after_branch: afterBlocked.branch,
+          before_workspace_fingerprint: workspaceFingerprint(before),
+          after_workspace_fingerprint: workspaceFingerprint(afterBlocked),
+          previous_context: decision ?? reviewDecision ?? phasePatch ?? {},
+          created_at: new Date().toISOString(),
+        }
+      );
+      const recovering: RunState = {
+        ...run,
+        phase: "CHIEF_RECOVERY",
+        status: "running",
+        updated_at: new Date().toISOString(),
+      };
+      await saveRunState(path, recovering);
+      return {
+        runState: recovering,
+        projectState: project,
+        worker,
+        snapshot: afterBlocked,
+      };
     }
     const failed = failState(run, `Worker execution failed: ${worker.error}`);
     await saveRunState(path, failed);
