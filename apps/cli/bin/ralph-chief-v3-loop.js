@@ -118,7 +118,7 @@ export async function runV3BigLoop(options) {
             runId,
             chiefConfig: config.chief,
             logName,
-            runStage: options.runStage,
+            timeout_seconds: config.timeout_seconds,
           })
       : undefined;
   const loadState =
