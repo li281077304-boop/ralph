@@ -701,6 +701,7 @@ export type GoalWorkerResult = {
   error?: string;
   goalStatus?: GoalStatus;
   humanRequired?: boolean;
+  technicalFailureKind?: string;
 };
 
 /** Explicitly pause and verify a Goal during an intentional controller stop. */
@@ -1204,6 +1205,7 @@ export async function runNativeGoalWorker(options: {
         },
         goalStatus: stalledGoal?.status ?? "paused",
         humanRequired: false,
+        technicalFailureKind: "GOAL_STALLED",
         error: error.message,
       };
     }

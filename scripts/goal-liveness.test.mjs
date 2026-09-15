@@ -73,6 +73,43 @@ test("active Goal with no progress is classified as stalled and paused", async (
   }
 });
 
+test("runNativeGoalWorker exposes a structured technical stall result", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ralph-goal-stall-result-"));
+  const binary = await fakeCodex(root, "active");
+  const result = await runNativeGoalWorker({
+    projectRoot: root,
+    runId: "run-stall",
+    round: 1,
+    taskId: "task-stall",
+    prompt: "objective",
+    transport: await NativeCodexGoalTransport.create(binary),
+    goalPollIntervalMs: 100,
+    goalStallMs: 1,
+    livenessNow: (() => {
+      let tick = 0;
+      return () => ++tick;
+    })(),
+  });
+  assert.equal(result.technicalFailureKind, "GOAL_STALLED");
+  assert.equal(result.humanRequired, false);
+  const liveness = JSON.parse(
+    await readFile(
+      join(
+        root,
+        ".ralph",
+        "chief-runs",
+        "run-stall",
+        "rounds",
+        "001",
+        "goal_liveness.json"
+      ),
+      "utf8"
+    )
+  );
+  assert.equal(liveness.last_goal_status, "paused");
+  assert.equal(liveness.stall_state, "stalled");
+});
+
 test("app-server exit is surfaced instead of an unbounded wait", async () => {
   const root = await mkdtemp(join(tmpdir(), "ralph-goal-disconnect-"));
   const binary = await fakeCodex(root, "exit");
