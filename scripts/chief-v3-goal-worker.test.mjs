@@ -237,7 +237,7 @@ for (const status of ["paused", "usageLimited", "budgetLimited"]) {
   });
 }
 
-test("technical Goal blocked fails closed without entering HUMAN_REQUIRED", async () => {
+test("technical Goal blocked routes to CHIEF_RECOVERY without entering HUMAN_REQUIRED", async () => {
   const f = await fixture();
   const result = await runWorkerPhase({
     projectRoot: f.root,
@@ -245,8 +245,8 @@ test("technical Goal blocked fails closed without entering HUMAN_REQUIRED", asyn
     config: config(),
     goalTransport: new FakeGoalTransport(f.root, "blocked"),
   });
-  assert.equal(result.runState.phase, "FAILED");
-  assert.equal(result.runState.status, "failed");
+  assert.equal(result.runState.phase, "CHIEF_RECOVERY");
+  assert.equal(result.runState.status, "running");
 });
 
 test("explicit human Goal block maps to HUMAN_REQUIRED", async () => {
@@ -272,7 +272,7 @@ test("technical Goal block can be resumed explicitly after environment repair", 
     config: config(),
     goalTransport: transport,
   });
-  assert.equal(blocked.runState.phase, "FAILED");
+  assert.equal(blocked.runState.phase, "CHIEF_RECOVERY");
   const resumed = await resumeTechnicalBlockedWorker({
     projectRoot: f.root,
     runId: f.runId,
@@ -466,7 +466,10 @@ for (const status of ["blocked", "usageLimited", "budgetLimited"]) {
       config: config(),
       goalTransport: transport,
     });
-    assert.equal(result.runState.phase, "FAILED");
+    assert.equal(
+      result.runState.phase,
+      status === "blocked" ? "CHIEF_RECOVERY" : "FAILED"
+    );
     assert.equal(
       transport.calls.filter(([method]) => method === "thread/goal/set").length,
       0

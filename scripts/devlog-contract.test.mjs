@@ -109,7 +109,7 @@ test("devlog does not elevate Codex permissions", async () => {
 test("fresh context reads historical conclusions with a deterministic bound", async () => {
   const root = process.cwd();
   const recent = await buildRecentDevlogContext(root, {
-    limit: 2,
+    limit: 3,
     maxChars: 16_000,
   });
   assert.match(recent, /status=active/);

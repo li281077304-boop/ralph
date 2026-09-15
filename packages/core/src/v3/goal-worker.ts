@@ -487,7 +487,11 @@ export class NativeCodexGoalTransport implements GoalTransport {
       this.disconnected = true;
       const suffix = this.stderr ? `: ${this.stderr.trim()}` : "";
       for (const waiter of this.pending.values())
-        waiter.reject(new Error(`Codex app-server exited${suffix}`));
+        waiter.reject(
+          new Error(
+            `NATIVE_GOAL_TRANSPORT_DISCONNECTED: Codex app-server exited${suffix}`
+          )
+        );
       this.pending.clear();
       for (const listener of this.disconnectListeners) listener();
     };

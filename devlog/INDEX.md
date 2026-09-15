@@ -2,3 +2,4 @@
 
 - 2026-09-15/001-goal-liveness-reconciliation — historical incident and liveness repair
 - 2026-09-15/002-real-codex-task-smoke — devlog-hardening-smoke/1/smoke
+- 2026-09-15/003-autonomous-obligation-loop — ralph-v3-autonomous-obligation-loop/1/autonomous-obligation-loop

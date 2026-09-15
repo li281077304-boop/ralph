@@ -12,7 +12,10 @@ import {
   type RepoSnapshot,
 } from "../git-guard.js";
 import { getChiefRunDir, getRoundDir } from "./rounds.js";
-import { loadProjectStateFromProject } from "./project-plan.js";
+import {
+  loadProjectStateFromProject,
+  saveProjectStateToProject,
+} from "./project-plan.js";
 import {
   loadRunState,
   saveRunState,
@@ -24,6 +27,8 @@ import { assertProjectState, assertRunState } from "./state-invariants.js";
 import { writeJsonAtomic, writeTextAtomic } from "./atomic-json.js";
 import { parseChiefReviewDecision } from "./review.js";
 import { runNativeGoalWorker, type GoalTransport } from "./goal-worker.js";
+import { markObligationHumanBlocked } from "./obligations.js";
+import { persistWorkerBlock, stableFailureSignature } from "./recovery.js";
 
 export type V3WorkerConfig = {
   worker: {
@@ -71,13 +76,15 @@ export async function resumeTechnicalBlockedWorker(options: {
   const root = resolve(options.projectRoot);
   const statePath = runPath(root, options.runId);
   const state = await loadRunState(statePath);
-  const technicalBlockedReason = state.failure_reason === "GOAL_STATUS:blocked";
+  const technicalBlockedReason =
+    state.failure_reason === "GOAL_STATUS:blocked" ||
+    state.phase === "CHIEF_RECOVERY";
   const interruptedRecovery =
     state.failure_reason ===
     "WORKER requires a clean Git worktree before execution";
   if (
     (!technicalBlockedReason && !interruptedRecovery) ||
-    (state.phase !== "HUMAN_REQUIRED" && state.phase !== "FAILED")
+    !["HUMAN_REQUIRED", "FAILED", "CHIEF_RECOVERY"].includes(state.phase)
   )
     throw new Error("run is not a resumable technical Goal block");
   const project = await loadProjectStateFromProject(root);
@@ -261,6 +268,53 @@ function failState(state: RunState, reason: string): RunState {
   };
 }
 
+function deterministicWorkerFailure(message: string): boolean {
+  return /(?:HOST_CODEX_NOT_FOUND|malformed|identity mismatch|state corruption|lock|policy violation|non-detached|current_task_id|Git worktree before execution|GOAL_STATUS:(?:paused|usageLimited|budgetLimited)|activat(?:e|ion))/i.test(
+    message
+  );
+}
+
+function humanClaimIsTechnical(message: string): boolean {
+  return /ENVIRONMENT_LIMITATION|TEST_FAILURE|BUILD_FAILURE|MISSING_COMMAND|SANDBOX_LIMIT|UI_UNAVAILABLE|LOOPBACK_UNAVAILABLE|IMPLEMENTATION_DIFFICULTY|GOAL_STALLED|ENOENT|localhost|bind/i.test(
+    message
+  );
+}
+
+export function failureSignature(message: string): string {
+  return stableFailureSignature(message);
+}
+
+async function persistTechnicalWorkerBlock(
+  root: string,
+  run: RunState,
+  task: ProjectTask,
+  worker: { error: string; text: string; goalStatus?: string },
+  before: RepoSnapshot,
+  after: RepoSnapshot,
+  context: Record<string, unknown>
+): Promise<void> {
+  await persistWorkerBlock(root, {
+    run_id: run.run_id,
+    round: run.round,
+    task_id: task.id,
+    goal_status: worker.goalStatus === "blocked" ? "blocked" : "error",
+    human_required: false,
+    failure_kind: "technical",
+    worker_error: worker.error,
+    worker_text: worker.text,
+    before: snapshotSummary(before),
+    after: snapshotSummary(after),
+    changed_paths: new GitGuard(root).changedPaths(before, after),
+    violations: [],
+    before_branch: before.branch,
+    after_branch: after.branch,
+    before_workspace_fingerprint: workspaceFingerprint(before),
+    after_workspace_fingerprint: workspaceFingerprint(after),
+    previous_context: context,
+    failure_signature: failureSignature(worker.error),
+  });
+}
+
 function cleanStatus(root: string): string {
   return maybeGit(root, ["status", "--porcelain=v1", "--untracked-files=all"])
     .split("\n")
@@ -383,6 +437,37 @@ async function readPreviousPhasePatch(
     }
   }
   return undefined;
+}
+
+async function readRecoveryResumeContext(
+  root: string,
+  run: RunState,
+  task: ProjectTask
+): Promise<Record<string, unknown> | undefined> {
+  const path = artifact(
+    root,
+    run.run_id,
+    run.round,
+    "recovery_resume_context.json"
+  );
+  try {
+    const value = JSON.parse(await readFile(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    if (
+      value.run_id !== run.run_id ||
+      value.round !== run.round ||
+      value.task_id !== task.id
+    )
+      throw new Error("recovery resume context identity mismatch");
+    return value;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(`recovery_resume_context.json is malformed: ${path}`, {
+      cause: error,
+    });
+  }
 }
 
 export function buildWorkerPrompt(
@@ -581,6 +666,7 @@ export async function runWorkerPhase(options: {
     decision === undefined && !reviewDecision
       ? await readPreviousPhasePatch(root, run, task)
       : undefined;
+  const recoveryContext = await readRecoveryResumeContext(root, run, task);
   const prompt = buildWorkerPrompt(
     project,
     run,
@@ -590,7 +676,12 @@ export async function runWorkerPhase(options: {
         ? { continuation: "REVIEW_PATCH", review_decision: reviewDecision }
         : phasePatch
           ? { continuation: "PHASE_PATCH", patch_context: phasePatch }
-          : undefined)
+          : recoveryContext
+            ? {
+                continuation: "TECHNICAL_RECOVERY",
+                recovery_context: recoveryContext,
+              }
+            : undefined)
   );
   await writeTextAtomic(join(round, "worker_prompt.md"), `${prompt}\n`);
   const runner =
@@ -641,22 +732,110 @@ export async function runWorkerPhase(options: {
     const goalStatus = (worker as { goalStatus?: string }).goalStatus;
     if (
       goalStatus === "blocked" &&
-      (worker as { humanRequired?: boolean }).humanRequired
+      (worker as { humanRequired?: boolean }).humanRequired &&
+      !humanClaimIsTechnical(worker.error)
     ) {
-      const waiting: RunState = {
-        ...run,
-        phase: "HUMAN_REQUIRED",
-        status: "waiting",
-        failure_reason: worker.error,
-        updated_at: new Date().toISOString(),
+      const human = await markObligationHumanBlocked(root, run, project, {
+        human_question: worker.error,
+        human_required_reason: "USER_ONLY_INPUT: Worker requested user input",
+        human_options: [],
+        summary: worker.text || worker.error,
+      });
+      await saveProjectStateToProject(root, human.projectState);
+      await saveRunState(path, human.runState);
+      return {
+        runState: human.runState,
+        projectState: human.projectState,
+        worker,
       };
-      await saveRunState(path, waiting);
-      return { runState: waiting, projectState: project, worker };
     }
     if (goalStatus === "blocked") {
-      const blocked = failState(run, "GOAL_STATUS:blocked");
-      await saveRunState(path, blocked);
-      return { runState: blocked, projectState: project, worker };
+      const afterBlocked = guard.snapshot();
+      const violations = guard.violations(before, afterBlocked);
+      if (afterBlocked.head !== before.head)
+        violations.push({ kind: "branch", path: "HEAD" });
+      if (violations.length) {
+        const failed = failState(
+          run,
+          `Worker policy violation: ${violations.map((item) => `${item.kind}:${item.path}`).join(", ")}`
+        );
+        await saveRunState(path, failed);
+        return {
+          runState: failed,
+          projectState: project,
+          worker,
+          snapshot: afterBlocked,
+        };
+      }
+      await persistTechnicalWorkerBlock(
+        root,
+        run,
+        task,
+        { ...worker, error: worker.error },
+        before,
+        afterBlocked,
+        (decision ?? reviewDecision ?? phasePatch ?? {}) as Record<
+          string,
+          unknown
+        >
+      );
+      const recovering = {
+        ...run,
+        phase: "CHIEF_RECOVERY" as const,
+        status: "running" as const,
+        updated_at: new Date().toISOString(),
+      };
+      await saveRunState(path, recovering);
+      return {
+        runState: recovering,
+        projectState: project,
+        worker,
+        snapshot: afterBlocked,
+      };
+    }
+    if (!deterministicWorkerFailure(worker.error)) {
+      const afterBlocked = guard.snapshot();
+      const violations = guard.violations(before, afterBlocked);
+      if (afterBlocked.head !== before.head)
+        violations.push({ kind: "branch", path: "HEAD" });
+      if (violations.length) {
+        const failed = failState(
+          run,
+          `Worker policy violation: ${violations.map((item) => `${item.kind}:${item.path}`).join(", ")}`
+        );
+        await saveRunState(path, failed);
+        return {
+          runState: failed,
+          projectState: project,
+          worker,
+          snapshot: afterBlocked,
+        };
+      }
+      await persistTechnicalWorkerBlock(
+        root,
+        run,
+        task,
+        { ...worker, error: worker.error },
+        before,
+        afterBlocked,
+        (decision ?? reviewDecision ?? phasePatch ?? {}) as Record<
+          string,
+          unknown
+        >
+      );
+      const recovering = {
+        ...run,
+        phase: "CHIEF_RECOVERY" as const,
+        status: "running" as const,
+        updated_at: new Date().toISOString(),
+      };
+      await saveRunState(path, recovering);
+      return {
+        runState: recovering,
+        projectState: project,
+        worker,
+        snapshot: afterBlocked,
+      };
     }
     const failed = failState(run, `Worker execution failed: ${worker.error}`);
     await saveRunState(path, failed);

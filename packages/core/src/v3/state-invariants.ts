@@ -10,7 +10,9 @@ const phaseSet = new Set<string>([
   "CHIEF_REVIEW",
   "INTEGRATION_UAT",
   "FINAL_REVIEW",
+  "CHIEF_RECOVERY",
   "WAITING_FOR_CHIEF",
+  "WAITING_FOR_HUMAN",
   "HUMAN_REQUIRED",
   "DONE",
   "FAILED",
@@ -27,7 +29,11 @@ const taskStatuses = new Set([
   "cancelled",
 ]);
 const terminalPhases = new Set(["DONE", "FAILED"]);
-const waitingPhases = new Set(["WAITING_FOR_CHIEF", "HUMAN_REQUIRED"]);
+const waitingPhases = new Set([
+  "WAITING_FOR_CHIEF",
+  "WAITING_FOR_HUMAN",
+  "HUMAN_REQUIRED",
+]);
 
 function fail(message: string): never {
   throw new Error(`Invalid durable state: ${message}`);
