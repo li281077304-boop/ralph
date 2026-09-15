@@ -29,6 +29,7 @@ import { parseChiefReviewDecision } from "./review.js";
 import { runNativeGoalWorker, type GoalTransport } from "./goal-worker.js";
 import { markObligationHumanBlocked } from "./obligations.js";
 import { persistWorkerBlock, stableFailureSignature } from "./recovery.js";
+import { runFiniteCodexWorker } from "./finite-worker.js";
 
 export type V3WorkerConfig = {
   worker: {
@@ -43,6 +44,7 @@ export type V3WorkerConfig = {
   max_changed_paths?: number;
   ralph_dir?: string;
   package_dir?: string;
+  timeout_seconds?: number;
 };
 
 export type V3WorkerRunner = (
@@ -160,7 +162,7 @@ export async function resumeTechnicalBlockedWorker(options: {
   if (cleanStatus(root) !== "") {
     const changedPaths = recoveredSnapshot.status
       .split("\n")
-      .map((line) => line.slice(3).trim())
+      .map((line) => line.slice(2).trim())
       .filter(
         (path) =>
           Boolean(path) && path !== "devlog" && !path.startsWith("devlog/")
@@ -319,7 +321,7 @@ function cleanStatus(root: string): string {
   return maybeGit(root, ["status", "--porcelain=v1", "--untracked-files=all"])
     .split("\n")
     .filter((line) => {
-      const path = line.slice(3).trim().replaceAll("\\", "/");
+      const path = line.slice(2).trim().replaceAll("\\", "/");
       return path !== "devlog" && !path.startsWith("devlog/");
     })
     .join("\n");
@@ -546,29 +548,38 @@ function defaultRunner(
   root: string,
   runDir: string
 ): V3WorkerRunner {
-  return (stage, prompt, workspace, iteration, options = {}) =>
-    runStage(
-      stage,
-      prompt,
-      workspace,
-      iteration,
-      undefined,
-      join(
-        runDir,
-        "rounds",
-        String(iteration).padStart(3, "0"),
-        "worker.ndjson"
-      ),
-      {
-        ...options,
-        agent: stage.agent,
+  return async (stage, prompt, workspace, iteration, options = {}) => {
+    const logPath = join(
+      runDir,
+      "rounds",
+      String(iteration).padStart(3, "0"),
+      "worker.ndjson"
+    );
+    // V3's finite Codex Worker runs on the host, just like the Host Chief.
+    // Keep the legacy Docker runner for non-Codex stages for compatibility.
+    if (stage.agent === "codex") {
+      const result = await runFiniteCodexWorker({
+        projectRoot: workspace,
+        prompt,
+        logPath,
         model: stage.model,
         reasoningEffort: stage.reasoningEffort,
-        skillsHostDir: config.package_dir
-          ? join(config.package_dir, "templates", "skills")
+        timeoutMs: config.timeout_seconds
+          ? config.timeout_seconds * 1000
           : undefined,
-      }
-    );
+      });
+      return { text: result.text, meta: result.meta as StageMeta };
+    }
+    return runStage(stage, prompt, workspace, iteration, undefined, logPath, {
+      ...options,
+      agent: stage.agent,
+      model: stage.model,
+      reasoningEffort: stage.reasoningEffort,
+      skillsHostDir: config.package_dir
+        ? join(config.package_dir, "templates", "skills")
+        : undefined,
+    });
+  };
 }
 
 function fingerprintEqual(a: unknown, b: unknown): boolean {

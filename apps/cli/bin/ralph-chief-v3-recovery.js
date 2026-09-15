@@ -10,6 +10,7 @@ import {
   parseChiefRecoveryDecision,
   prepareChiefRecovery,
   releaseActiveWriterLock,
+  RECOVERY_OPEN_MARKER,
   RECOVERY_CLOSE_MARKER,
 } from "@daonhan/ralph-core";
 import { createV3CodexChiefTransport } from "./ralph-chief-v3-codex.js";

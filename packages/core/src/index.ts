@@ -159,6 +159,11 @@ export {
   type WorkerPhaseResult,
 } from "./v3/worker.js";
 export {
+  finiteWorkerArgs,
+  runFiniteCodexWorker,
+  type FiniteWorkerOptions,
+} from "./v3/finite-worker.js";
+export {
   GOAL_STATUSES,
   NativeCodexGoalTransport,
   pauseGoalForShutdown,

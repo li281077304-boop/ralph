@@ -1,0 +1,3 @@
+# Payroll project bootstrap and real UAT
+
+Inspect the local education-payroll checkout and recover its real project goal, acceptance obligations, and durable evidence without inventing business criteria or modifying the user's workspace. Add only a minimal deterministic file-based bootstrap/import entry when canonical Ralph project state is absent. Then create a Ralph-owned isolated worktree and run the real Payroll workload through External-first Chief, finite Luna Worker, Machine Gate, Review/Recovery until technical work is exhausted. Preserve existing evidence, never reset/stash/merge production, and report blockers precisely.

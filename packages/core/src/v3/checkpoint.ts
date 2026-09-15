@@ -85,7 +85,7 @@ function changedPaths(root: string): string[] {
     "--untracked-files=all",
   ]);
   for (const line of status.split(/\r?\n/).filter(Boolean)) {
-    const value = line.slice(3).trim();
+    const value = line.slice(2).trim();
     if (value && !value.includes(" -> ")) result.add(value);
   }
   return [...result].sort();
@@ -105,7 +105,7 @@ function cleanWorktree(root: string): boolean {
     maybeGit(root, ["status", "--porcelain=v1", "--untracked-files=all"])
       .split("\n")
       .filter((line) => {
-        const path = line.slice(3).trim().replaceAll("\\", "/");
+        const path = line.slice(2).trim().replaceAll("\\", "/");
         return path !== "devlog" && !path.startsWith("devlog/");
       })
       .join("\n") === ""

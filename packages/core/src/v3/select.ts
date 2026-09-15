@@ -239,7 +239,7 @@ export function parseChiefSelectDecision(value: unknown): ChiefSelectDecision {
   stringValue(value.human_question, "human_question");
   stringArray(value.human_options, "human_options");
   stringValue(value.uat_scope, "uat_scope");
-  if (value.next_worker_task !== undefined) {
+  if (value.next_worker_task !== undefined && value.next_worker_task !== null) {
     if (!record(value.next_worker_task))
       fail("next_worker_task must be an object");
     exactKeys(

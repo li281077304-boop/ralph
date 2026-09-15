@@ -260,7 +260,7 @@ export function parseChiefReviewDecision(value: unknown): ChiefReviewDecision {
   stringArray(value.patch_instructions, "patch_instructions");
   stringValue(value.human_question, "human_question");
   stringArray(value.human_options, "human_options");
-  if (value.next_worker_task !== undefined) {
+  if (value.next_worker_task !== undefined && value.next_worker_task !== null) {
     if (!record(value.next_worker_task))
       fail("next_worker_task must be an object");
     exactKeys(
@@ -410,15 +410,15 @@ function checkpointRemoteUrl(root: string, remote: string): string {
   return git(root, ["remote", "get-url", remote]);
 }
 function clean(root: string): boolean {
-  return (
-    git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
-      .split("\n")
-      .filter((line) => {
-        const path = line.slice(3).trim().replaceAll("\\", "/");
-        return path !== "devlog" && !path.startsWith("devlog/");
-      })
-      .join("\n") === ""
-  );
+  const raw = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  const remaining = raw
+    .split("\n")
+    .filter(Boolean)
+    .filter((line) => {
+      const path = line.slice(2).trim().replaceAll("\\", "/");
+      return path !== "devlog" && !path.startsWith("devlog/");
+    });
+  return remaining.join("\n") === "";
 }
 function remoteHead(root: string, remote: string, branch: string): string {
   return (
