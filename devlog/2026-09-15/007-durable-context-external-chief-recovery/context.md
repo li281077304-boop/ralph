@@ -35,3 +35,21 @@ UNKNOWN / OPEN RISKS
 - The exact historical SHA/run for the observed “3+3” External Chief session is unknown.
 - Real Chrome/Playwright login, extension/session, and ChatGPT availability must be verified in the current environment; NOT_LOGGED_IN or HUMAN_VERIFICATION_REQUIRED may remain a legitimate operational boundary.
 - The exact set of capability differences will be determined by the three-way diff and tests, not assumed in advance.
+
+ADDITIONAL USER OBSERVATION (2026-09-15)
+
+USER OBSERVATION
+
+- The currently visible Chrome window shows ChatGPT logged in and behaving normally.
+- The ChatGPT composer is visibly present and can be typed into directly.
+- Chrome explicitly shows “Playwright Extension 已开始调试此浏览器”.
+- The user does not see a Cloudflare or human-verification page.
+- The Agent has repeatedly remained in tab-attachment / attach-daemon investigation and has not written any content into the visible composer.
+
+CONFIRMED FACT
+
+- These are user-visible observations supplied for the next probe; they do not by themselves prove which Playwright context is attached or that the production CLI can control this tab.
+
+DECISION
+
+- Stop broad environment investigation. Use Ralph’s production Playwright CLI/session for one decisive tab-list → tab-select → composer probe → harmless message → correlated reply roundtrip. Classify any failure from the actual controlled tab and control path.

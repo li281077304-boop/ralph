@@ -16,12 +16,18 @@
 
 ## Open risks
 
-- Real Playwright UAT is blocked by a confirmed Cloudflare human-verification challenge in the current session; this is not a code-level selector failure.
-- Top-level CLI signal handling still does not automatically call the controlled Goal pause helper.
-- A real authenticated session is needed to establish the requested six live roundtrips and Host Sol=0 evidence.
+- The repo-local Swift helper can send but cannot read the page because native AX exposes zero page characters (`AX_PAGE_TEXT_UNAVAILABLE`); it remains frozen for tonight.
+- Playwright CLI tab-list/session/daemon/IPC is frozen and is not part of this adapter.
+- The temporary Agent-mediated adapter is not a process-level API and cannot survive an Agent context crash.
 
-## Live Playwright result
+## Live Agent-mediated result
 
-- Bridge attempts: `0` real submissions, `0` successes, `0` transport failures. Preflight/acquisition reached the existing Chrome tab, but the page was stopped at a confirmed Cloudflare human-verification challenge before any message was sent.
-- Ralph External Chief attempts: `0`; Host Sol calls during this live probe: `0`.
-- Requested 3 bridge + 3 Ralph External Chief sequence: `NOT-YET-VERIFIED`, stopped at the explicitly allowed `HUMAN_VERIFICATION_REQUIRED` boundary.
+- External Chief attempts: `3`; successes: `3`; failures: `0`; Host Sol fallbacks: `0`.
+- Phases covered: SELECT, CHIEF_REVIEW, CHIEF_RECOVERY.
+- The prepared ChatGPT page had a writable composer and no human-verification challenge; every reply was read directly from the page and correlated to its identity/closing marker.
+
+# Tonight's temporary CUA adapter outcome
+
+The prepared browser contract was exercised without creating or repairing a Playwright CLI connection. Three real Ralph-shaped handoffs were completed through the Agent's existing CUA ability: SELECT (`CONTINUE_DEVELOPMENT`), CHIEF_REVIEW (`CONTINUE`), and CHIEF_RECOVERY (`RUN_MACHINE_GATE`). External attempts/successes/failures were 3/3/0 and Host Sol fallback was 0. Exact request and reply artifacts are in this entry.
+
+The Payroll evidence was then bootstrapped into an isolated worktree. Revalidation produced 374 passing tests, compileall PASS, and diff-check PASS. The canonical 17-item ledger has 12 PASS, 0 TECHNICAL_OPEN, 5 HUMAN_BLOCKED, and 0 FAILED; therefore the scheduler correctly stops at `WAITING_FOR_HUMAN` without inventing business rules. `CORE_PAYROLL_READY=YES`; `FULL_PAYROLL_READY=NO`.
