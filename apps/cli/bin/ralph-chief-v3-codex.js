@@ -77,6 +77,11 @@ async function directoryEvidence(root, ignoredPaths = new Set()) {
 async function workspaceEvidence(projectRoot, ignoredPaths = []) {
   const guard = new GitGuard(projectRoot);
   const snapshot = guard.snapshot();
+  const ignoredWorkspacePaths = new Set(
+    ignoredPaths.map((path) =>
+      relative(projectRoot, path).replaceAll("\\", "/")
+    )
+  );
   const ralphRoot = join(projectRoot, ".ralph");
   const ignored = new Set(
     ignoredPaths.map((path) => relative(ralphRoot, path))
@@ -87,7 +92,9 @@ async function workspaceEvidence(projectRoot, ignoredPaths = []) {
     status: snapshot.status,
     tracked_diff: snapshot.diff,
     staged_diff: gitOutput(projectRoot, ["diff", "--cached", "--binary"]),
-    untracked_paths: [...snapshot.untrackedFiles.keys()].sort(),
+    untracked_paths: [...snapshot.untrackedFiles.keys()]
+      .filter((path) => !ignoredWorkspacePaths.has(path))
+      .sort(),
     ralph_files: await directoryEvidence(ralphRoot, ignored),
   };
 }
