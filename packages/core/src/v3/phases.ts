@@ -13,6 +13,7 @@ const definitions: readonly PhaseDefinition[] = [
   { phase: "MACHINE_GATE", runnable: true, handlerKey: "MACHINE_GATE" },
   { phase: "CHECKPOINT", runnable: true, handlerKey: "CHECKPOINT" },
   { phase: "CHIEF_REVIEW", runnable: true, handlerKey: "CHIEF_REVIEW" },
+  { phase: "CHIEF_RECOVERY", runnable: true, handlerKey: "CHIEF_RECOVERY" },
   { phase: "INTEGRATION_UAT", runnable: true, handlerKey: "INTEGRATION_UAT" },
   { phase: "FINAL_REVIEW", runnable: true, handlerKey: "FINAL_REVIEW" },
   { phase: "WAITING_FOR_CHIEF", runnable: false },

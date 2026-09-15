@@ -237,7 +237,7 @@ for (const status of ["paused", "usageLimited", "budgetLimited"]) {
   });
 }
 
-test("technical Goal blocked fails closed without entering HUMAN_REQUIRED", async () => {
+test("technical Goal blocked routes to Chief Recovery without entering HUMAN_REQUIRED", async () => {
   const f = await fixture();
   const result = await runWorkerPhase({
     projectRoot: f.root,
@@ -245,8 +245,16 @@ test("technical Goal blocked fails closed without entering HUMAN_REQUIRED", asyn
     config: config(),
     goalTransport: new FakeGoalTransport(f.root, "blocked"),
   });
-  assert.equal(result.runState.phase, "FAILED");
-  assert.equal(result.runState.status, "failed");
+  assert.equal(result.runState.phase, "CHIEF_RECOVERY");
+  assert.equal(result.runState.status, "running");
+  const block = JSON.parse(
+    await readFile(
+      join(getChiefRunDir(f.root, f.runId), "rounds/001/worker_block.json"),
+      "utf8"
+    )
+  );
+  assert.equal(block.goal_status, "blocked");
+  assert.equal(block.human_required, false);
 });
 
 test("explicit human Goal block maps to HUMAN_REQUIRED", async () => {
@@ -263,6 +271,45 @@ test("explicit human Goal block maps to HUMAN_REQUIRED", async () => {
   assert.equal(result.runState.status, "waiting");
 });
 
+test("fresh Worker prompt carries the previous Chief technical recovery", async () => {
+  const f = await fixture();
+  await saveRunState(join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json"), {
+    run_id: f.runId,
+    version: 1,
+    phase: "WORKER",
+    status: "running",
+    round: 2,
+    current_task_id: "task-1",
+    started_at: NOW,
+    updated_at: NOW,
+  });
+  await mkdir(join(getChiefRunDir(f.root, f.runId), "rounds/001"), {
+    recursive: true,
+  });
+  await writeFile(
+    join(getChiefRunDir(f.root, f.runId), "rounds/001/recovery_decision.json"),
+    JSON.stringify({
+      run_id: f.runId,
+      round: 1,
+      task_id: "task-1",
+      action: "RETRY_WORKER",
+      worker_task: "use in-process checks",
+    })
+  );
+  await runWorkerPhase({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: config(),
+    goalTransport: new FakeGoalTransport(f.root),
+  });
+  const prompt = await readFile(
+    join(getChiefRunDir(f.root, f.runId), "rounds/002/worker_prompt.md"),
+    "utf8"
+  );
+  assert.match(prompt, /TECHNICAL_RECOVERY/);
+  assert.match(prompt, /use in-process checks/);
+});
+
 test("technical Goal block can be resumed explicitly after environment repair", async () => {
   const f = await fixture();
   const transport = new FakeGoalTransport(f.root, "blocked");
@@ -272,7 +319,7 @@ test("technical Goal block can be resumed explicitly after environment repair", 
     config: config(),
     goalTransport: transport,
   });
-  assert.equal(blocked.runState.phase, "FAILED");
+  assert.equal(blocked.runState.phase, "CHIEF_RECOVERY");
   const resumed = await resumeTechnicalBlockedWorker({
     projectRoot: f.root,
     runId: f.runId,
@@ -466,7 +513,10 @@ for (const status of ["blocked", "usageLimited", "budgetLimited"]) {
       config: config(),
       goalTransport: transport,
     });
-    assert.equal(result.runState.phase, "FAILED");
+    assert.equal(
+      result.runState.phase,
+      status === "blocked" ? "CHIEF_RECOVERY" : "FAILED"
+    );
     assert.equal(
       transport.calls.filter(([method]) => method === "thread/goal/set").length,
       0

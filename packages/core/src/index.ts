@@ -191,3 +191,13 @@ export {
   type IntegrationUatResult,
   type V3IntegrationUatConfig,
 } from "./v3/integration-uat.js";
+export {
+  RECOVERY_OPEN_MARKER,
+  RECOVERY_CLOSE_MARKER,
+  parseChiefRecoveryDecision,
+  prepareChiefRecovery,
+  applyChiefRecoveryDecision,
+  type ChiefRecoveryDecision,
+  type RecoveryAction,
+  type RecoveryPreparation,
+} from "./v3/recovery.js";

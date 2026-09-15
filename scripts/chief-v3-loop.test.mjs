@@ -98,6 +98,71 @@ test("HUMAN_REQUIRED stops without later handlers", async () => {
   assert.deepEqual(h.order, ["review"]);
 });
 
+test("CHIEF_RECOVERY retries the same task without Human Touch", async () => {
+  const h = harness(running("CHIEF_RECOVERY", 1));
+  let recoveries = 0;
+  h.phaseHandlers.recovery = async () => {
+    recoveries += 1;
+    h.order.push("recovery");
+    h.setState(running("WORKER", 2, "task-a"));
+  };
+  h.phaseHandlers.work = async () => {
+    h.order.push("work");
+    h.setState(running("CHIEF_REVIEW", 2, "task-a"));
+  };
+  h.phaseHandlers.review = async () => {
+    h.order.push("review");
+    h.setState({ ...running("DONE", 2, null), status: "done" });
+  };
+  const result = await h.run();
+  assert.equal(result.status, "TASK_PASS");
+  assert.equal(recoveries, 1);
+  assert.deepEqual(h.order, ["recovery", "work", "review"]);
+});
+
+test("Chief Recovery HUMAN_REQUIRED stops immediately", async () => {
+  const h = harness(running("CHIEF_RECOVERY"));
+  h.phaseHandlers.recovery = async () => {
+    h.order.push("recovery");
+    h.setState({ ...running("HUMAN_REQUIRED"), status: "paused" });
+  };
+  const result = await h.run();
+  assert.equal(result.status, "HUMAN_REQUIRED");
+  assert.deepEqual(h.order, ["recovery"]);
+});
+
+test("technical blocks recover through Worker, Gate, Checkpoint and Review", async () => {
+  const h = harness(running("WORKER", 1));
+  h.phaseHandlers.work = async () => {
+    h.order.push(`work:${h.state.phase}`);
+    if (h.state.phase === "WORKER" && h.state.round === 1)
+      h.setState({ ...running("CHIEF_RECOVERY", 1, "task-a") });
+    else if (h.state.phase === "WORKER")
+      h.setState(running("MACHINE_GATE", 2, "task-a"));
+    else if (h.state.phase === "MACHINE_GATE")
+      h.setState(running("CHECKPOINT", 2, "task-a"));
+    else h.setState(running("CHIEF_REVIEW", 2, "task-a"));
+  };
+  h.phaseHandlers.recovery = async () => {
+    h.order.push("recovery");
+    h.setState(running("WORKER", 2, "task-a"));
+  };
+  h.phaseHandlers.review = async () => {
+    h.order.push("review");
+    h.setState({ ...running("DONE", 2, null), status: "done" });
+  };
+  const result = await h.run();
+  assert.equal(result.status, "TASK_PASS");
+  assert.deepEqual(h.order, [
+    "work:WORKER",
+    "recovery",
+    "work:WORKER",
+    "work:MACHINE_GATE",
+    "work:CHECKPOINT",
+    "review",
+  ]);
+});
+
 test("FAILED stops fail closed", async () => {
   const h = harness({ ...running("FAILED"), status: "failed" });
   const result = await h.run();

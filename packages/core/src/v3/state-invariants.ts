@@ -8,6 +8,7 @@ const phaseSet = new Set<string>([
   "MACHINE_GATE",
   "CHECKPOINT",
   "CHIEF_REVIEW",
+  "CHIEF_RECOVERY",
   "INTEGRATION_UAT",
   "FINAL_REVIEW",
   "WAITING_FOR_CHIEF",
