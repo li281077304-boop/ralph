@@ -19,6 +19,7 @@ export {
   type ExternalChiefVerdict,
 } from "./chief.js";
 export {
+  defaultChiefConfig,
   loadChiefConfig,
   type ChiefConfig,
   type ChiefAgentConfig,
@@ -195,6 +196,13 @@ export {
   type V3WorkResult,
 } from "./v3/work.js";
 export { createIsolatedWorktree } from "./v3/isolation.js";
+export {
+  recordUsageLedger,
+  summarizeUsageLedger,
+  usageLedgerPath,
+  type UsageLedgerEntry,
+  type UsageLedgerSummary,
+} from "./usage-ledger.js";
 export {
   runAutonomousObligationLoop,
   type AutonomousEvent,

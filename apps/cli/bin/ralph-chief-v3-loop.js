@@ -12,6 +12,7 @@ import {
   runIntegrationUatPhase,
   createIsolatedWorktree,
   writeJsonAtomic,
+  recordUsageLedger,
   summarizeObligations,
   syncObligationsFromProject,
 } from "@daonhan/ralph-core";
@@ -25,13 +26,21 @@ function runStatePath(projectRoot, runId) {
   return join(getChiefRunDir(projectRoot, runId), "RUN_STATE.json");
 }
 
-function workConfig(config) {
+function workConfig(config, runId) {
+  const worker = config.worker ?? {};
   return {
     // Finite stage turns are the production default. Native Goal remains an
     // explicit compatibility mode for legacy runs only.
-    worker: { ...config.worker, mode: config.worker?.mode ?? "stage" },
+    worker: {
+      ...worker,
+      agent: worker.agent ?? "codex",
+      model: worker.model ?? "gpt-5.6-luna",
+      reasoning_effort: worker.reasoning_effort ?? "medium",
+      mode: worker.mode ?? "stage",
+    },
     commands: config.commands,
     timeout_seconds: config.timeout_seconds,
+    run_id: runId,
     gate_allowed_paths: config.gate_allowed_paths,
     required_clean_patterns: config.required_clean_patterns,
     forbidden_paths: config.forbidden_paths,
@@ -168,14 +177,17 @@ export async function runV3BigLoop(options) {
     !["codex", "external"].includes(config.chief_mode)
   )
     throw new Error("V3 Big Loop requires chief_mode: codex or external");
-  const codexTransport = (logName) =>
+  const codexTransport = (logName, fallbackFrom) =>
     createV3CodexChiefTransport({
       projectRoot,
       runId,
       chiefConfig: config.chief,
       logName,
+      fallbackFrom,
       timeout_seconds: config.timeout_seconds,
     });
+  const hostFallbackFrom =
+    config.chief_mode === "external" ? "external" : undefined;
   const externalTransport = (request) =>
     runExternalChiefGuiRoundtrip(config.gui_bridge, request);
   const runChiefPhase = async (route, externalRun, hostRun) => {
@@ -190,13 +202,50 @@ export async function runV3BigLoop(options) {
       chief_provider: "external",
       [`${route}_external_attempted`]: true,
     });
+    const startedAt = Date.now();
     try {
       const result = await externalRun();
+      await recordUsageLedger(projectRoot, {
+        timestamp: new Date().toISOString(),
+        role: "external_chief",
+        provider: "external",
+        model: null,
+        reasoning_effort: null,
+        phase: route.toUpperCase(),
+        run_id: runId,
+        round: null,
+        duration: Date.now() - startedAt,
+        input_tokens: null,
+        cached_input_tokens: null,
+        output_tokens: null,
+        total_tokens: null,
+        tokens_available: false,
+        fallback_from: null,
+        failure_signature: null,
+      });
       await recordChiefRouteTelemetry(projectRoot, runId, {
         [`${route}_external_successes`]: 1,
       });
       return result;
     } catch (error) {
+      await recordUsageLedger(projectRoot, {
+        timestamp: new Date().toISOString(),
+        role: "external_chief",
+        provider: "external",
+        model: null,
+        reasoning_effort: null,
+        phase: route.toUpperCase(),
+        run_id: runId,
+        round: null,
+        duration: Date.now() - startedAt,
+        input_tokens: null,
+        cached_input_tokens: null,
+        output_tokens: null,
+        total_tokens: null,
+        tokens_available: false,
+        fallback_from: null,
+        failure_signature: error?.code ?? "EXTERNAL_CHIEF_FAILURE",
+      });
       await recordChiefRouteTelemetry(projectRoot, runId, {
         [`${route}_external_failures`]: 1,
         [`${route}_fallback_reason`]:
@@ -227,7 +276,10 @@ export async function runV3BigLoop(options) {
             runId,
             devlogRoot: options.devlogRoot,
             guiConfig: config.gui_bridge,
-            transport: codexTransport("codex-chief-select.ndjson"),
+            transport: codexTransport(
+              "codex-chief-select.ndjson",
+              hostFallbackFrom
+            ),
           })
       ),
     work: () =>
@@ -235,7 +287,7 @@ export async function runV3BigLoop(options) {
         projectRoot,
         runId,
         devlogRoot: options.devlogRoot,
-        config: workConfig(config),
+        config: workConfig(config, runId),
       }),
     review: () =>
       runChiefPhase(
@@ -256,7 +308,10 @@ export async function runV3BigLoop(options) {
             devlogRoot: options.devlogRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "chief",
-            transport: codexTransport("codex-chief-review.ndjson"),
+            transport: codexTransport(
+              "codex-chief-review.ndjson",
+              hostFallbackFrom
+            ),
           })
       ),
     uat: () =>
@@ -288,7 +343,10 @@ export async function runV3BigLoop(options) {
             devlogRoot: options.devlogRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "final",
-            transport: codexTransport("codex-chief-final-review.ndjson"),
+            transport: codexTransport(
+              "codex-chief-final-review.ndjson",
+              hostFallbackFrom
+            ),
           })
       ),
     recovery: () =>
@@ -308,7 +366,10 @@ export async function runV3BigLoop(options) {
             runId,
             chiefConfig: config.chief,
             timeout_seconds: config.timeout_seconds,
-            transport: codexTransport("codex-chief-recovery.ndjson"),
+            transport: codexTransport(
+              "codex-chief-recovery.ndjson",
+              hostFallbackFrom
+            ),
           })
       ),
   };

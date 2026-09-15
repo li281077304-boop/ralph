@@ -39,7 +39,9 @@ export type ChiefConfig = {
 };
 
 const DEFAULT_CONFIG: ChiefConfig = {
-  chief_mode: "codex",
+  // External Chief is the default decision route. Host Codex Sol is used only
+  // by the V3 router as a deterministic fallback/escalation path.
+  chief_mode: "external",
   max_iterations: 6,
   timeout_seconds: 1800,
   commands: [],
@@ -61,7 +63,12 @@ const DEFAULT_CONFIG: ChiefConfig = {
   max_diff_bytes: 1_000_000,
   max_changed_paths: 1_000,
   chief: { agent: "codex", model: "gpt-5.6-sol", reasoning_effort: "high" },
-  worker: { agent: "codex" },
+  worker: {
+    agent: "codex",
+    model: "gpt-5.6-luna",
+    reasoning_effort: "medium",
+    mode: "stage",
+  },
 };
 
 function scalar(raw: string): string | number | boolean {

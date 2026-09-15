@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 
 import {
   createDevlogHandoff,
+  recordUsageLedger,
   validateDevlogHandoff,
   writeDevlogResult,
 } from "../packages/core/dist/index.js";
@@ -34,14 +35,26 @@ export async function runCodexTask(options) {
   });
   await validateDevlogHandoff(entry);
   const binary = options.binary ?? process.env.RALPH_CODEX_BIN ?? "codex";
+  const role = options.role ?? "worker";
+  if (!["worker", "chief"].includes(role))
+    throw new Error(`Unsupported Codex task role: ${role}`);
+  const model =
+    options.model ?? (role === "chief" ? "gpt-5.6-sol" : "gpt-5.6-luna");
+  const reasoningEffort =
+    options.reasoningEffort ?? (role === "chief" ? "high" : "medium");
   const policy = options.executionPolicy ?? {};
   const args = [];
   if (policy.approvalMode) args.push("--ask-for-approval", policy.approvalMode);
   if (policy.sandbox) args.push("--sandbox", policy.sandbox);
   if (policy.bypassApprovalsAndSandbox === true)
     args.push("--dangerously-bypass-approvals-and-sandbox");
-  args.push("exec", "--json", "--ephemeral", "-C", root, agentTask);
+  args.push("exec", "--json", "--ephemeral", "-C", root);
+  if (model) args.push("--model", model);
+  if (reasoningEffort)
+    args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
+  args.push(agentTask);
   const spawnImpl = options.spawnImpl ?? spawn;
+  const startedAt = Date.now();
   const child = spawnImpl(binary, args, {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
@@ -57,6 +70,54 @@ export async function runCodexTask(options) {
   const exitCode = await new Promise((resolveExit, rejectExit) => {
     child.once("error", rejectExit);
     child.once("exit", (code, signal) => resolveExit({ code, signal }));
+  });
+  let usage;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event.type === "turn.completed" && event.usage) usage = event.usage;
+    } catch {
+      // The task result is intentionally returned raw; malformed lines are
+      // diagnosed by the existing Codex process result handling.
+    }
+  }
+  const inputTokens =
+    typeof usage?.input_tokens === "number" ? usage.input_tokens : null;
+  const cachedInputTokens =
+    typeof usage?.cached_input_tokens === "number"
+      ? usage.cached_input_tokens
+      : null;
+  const outputTokens =
+    typeof usage?.output_tokens === "number" ? usage.output_tokens : null;
+  const totalTokens =
+    typeof usage?.total_tokens === "number"
+      ? usage.total_tokens
+      : inputTokens !== null && outputTokens !== null
+        ? inputTokens + outputTokens
+        : null;
+  await recordUsageLedger(root, {
+    timestamp: new Date().toISOString(),
+    role: "codex_task",
+    provider: "codex",
+    model,
+    reasoning_effort: reasoningEffort,
+    phase: "DIRECT_TASK",
+    run_id: options.runId ?? null,
+    round: options.round ?? null,
+    duration: Date.now() - startedAt,
+    input_tokens: inputTokens,
+    cached_input_tokens: cachedInputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+    tokens_available: [
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+      totalTokens,
+    ].some((value) => value !== null),
+    fallback_from: null,
+    failure_signature: exitCode.code !== 0 ? "CODEX_TASK_FAILED" : null,
   });
   await writeDevlogResult(
     entry,
@@ -85,6 +146,9 @@ function parseArgs(argv) {
         "--round",
         "--task-id",
         "--devlog-root",
+        "--role",
+        "--model",
+        "--reasoning-effort",
       ].includes(arg)
     )
       throw new Error(`Unknown argument: ${arg}`);
@@ -110,6 +174,9 @@ export async function main(argv = process.argv.slice(2)) {
     round: args.round ? Number(args.round) : undefined,
     taskId: args.task_id,
     devlogRoot: args.devlog_root,
+    role: args.role,
+    model: args.model,
+    reasoningEffort: args.reasoning_effort,
   });
   process.stdout.write(result.stdout);
   return 0;

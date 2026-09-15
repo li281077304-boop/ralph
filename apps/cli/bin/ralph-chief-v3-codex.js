@@ -7,7 +7,12 @@ import { createWriteStream } from "node:fs";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
-import { getChiefRunDir, GitGuard, writeJsonAtomic } from "@daonhan/ralph-core";
+import {
+  getChiefRunDir,
+  GitGuard,
+  recordUsageLedger,
+  writeJsonAtomic,
+} from "@daonhan/ralph-core";
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const STDERR_TAIL_BYTES = 8 * 1024;
@@ -107,6 +112,8 @@ function appendStderrTail(current, chunk) {
 }
 
 function codexArgs(projectRoot, chief, message) {
+  const model = chief.model ?? "gpt-5.6-sol";
+  const reasoningEffort = chief.reasoning_effort ?? "high";
   const args = [
     "--ask-for-approval",
     "never",
@@ -118,9 +125,8 @@ function codexArgs(projectRoot, chief, message) {
     "-C",
     projectRoot,
   ];
-  if (chief.model) args.push("--model", chief.model);
-  if (chief.reasoning_effort)
-    args.push("-c", `model_reasoning_effort=\"${chief.reasoning_effort}\"`);
+  args.push("--model", model);
+  args.push("-c", `model_reasoning_effort=\"${reasoningEffort}\"`);
   args.push(message);
   return args;
 }
@@ -160,11 +166,13 @@ export async function runV3CodexChiefRoundtrip(options) {
     stdio: ["ignore", "pipe", "pipe"],
     env: options.env ?? process.env,
   });
+  const startedAt = Date.now();
   const log = createWriteStream(logPath, { flags: "a" });
   let stdoutBuffer = "";
   let stderrTail = "";
   let lastAgentMessage;
   let turnCompleted = false;
+  let usage;
   let fatal;
   let timedOut = false;
   let settled = false;
@@ -188,6 +196,7 @@ export async function runV3CodexChiefRoundtrip(options) {
     }
     if (event.type === "turn.completed") {
       turnCompleted = true;
+      if (event.usage && typeof event.usage === "object") usage = event.usage;
       return;
     }
     if (event.type === "turn.failed") {
@@ -227,6 +236,63 @@ export async function runV3CodexChiefRoundtrip(options) {
       changed,
     });
     await closeLog();
+    const inputTokens =
+      typeof usage?.input_tokens === "number" ? usage.input_tokens : null;
+    const cachedInputTokens =
+      typeof usage?.cached_input_tokens === "number"
+        ? usage.cached_input_tokens
+        : null;
+    const outputTokens =
+      typeof usage?.output_tokens === "number" ? usage.output_tokens : null;
+    const totalTokens =
+      typeof usage?.total_tokens === "number"
+        ? usage.total_tokens
+        : inputTokens !== null && outputTokens !== null
+          ? inputTokens + outputTokens
+          : null;
+    const phase = logName.includes("select")
+      ? "SELECT"
+      : logName.includes("final")
+        ? "FINAL_REVIEW"
+        : logName.includes("recovery")
+          ? "CHIEF_RECOVERY"
+          : "CHIEF_REVIEW";
+    const failureSignature = changed
+      ? "CODEX_CHIEF_MODIFIED_WORKSPACE"
+      : error?.code
+        ? error.code
+        : timedOut
+          ? "CODEX_CHIEF_TIMEOUT"
+          : code !== 0
+            ? "CODEX_CHIEF_PROCESS_FAILED"
+            : !turnCompleted
+              ? "CODEX_CHIEF_NO_TURN_COMPLETED"
+              : typeof lastAgentMessage !== "string"
+                ? "CODEX_CHIEF_NO_FINAL_AGENT_MESSAGE"
+                : null;
+    await recordUsageLedger(projectRoot, {
+      timestamp: new Date().toISOString(),
+      role: "chief",
+      provider: "codex",
+      model: chief.model ?? "gpt-5.6-sol",
+      reasoning_effort: chief.reasoning_effort ?? "high",
+      phase,
+      run_id: runId,
+      round,
+      duration: Date.now() - startedAt,
+      input_tokens: inputTokens,
+      cached_input_tokens: cachedInputTokens,
+      output_tokens: outputTokens,
+      total_tokens: totalTokens,
+      tokens_available: [
+        inputTokens,
+        cachedInputTokens,
+        outputTokens,
+        totalTokens,
+      ].some((value) => value !== null),
+      fallback_from: options.fallbackFrom ?? null,
+      failure_signature: failureSignature,
+    });
     if (changed)
       throw chiefError(
         "CODEX_CHIEF_MODIFIED_WORKSPACE",

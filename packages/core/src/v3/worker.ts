@@ -45,6 +45,7 @@ export type V3WorkerConfig = {
   ralph_dir?: string;
   package_dir?: string;
   timeout_seconds?: number;
+  run_id?: string;
 };
 
 export type V3WorkerRunner = (
@@ -564,6 +565,8 @@ function defaultRunner(
         logPath,
         model: stage.model,
         reasoningEffort: stage.reasoningEffort,
+        runId: config.run_id,
+        round: iteration,
         timeoutMs: config.timeout_seconds
           ? config.timeout_seconds * 1000
           : undefined,

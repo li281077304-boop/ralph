@@ -2,6 +2,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { recordUsageLedger } from "../usage-ledger.js";
 
 export type FiniteWorkerOptions = {
   projectRoot: string;
@@ -10,6 +11,8 @@ export type FiniteWorkerOptions = {
   model?: string;
   reasoningEffort?: string;
   timeoutMs?: number;
+  runId?: string;
+  round?: number;
   binary?: string;
   spawn?: typeof nodeSpawn;
 };
@@ -53,9 +56,10 @@ export function finiteWorkerArgs(
     "-C",
     options.projectRoot,
   ];
-  if (options.model) args.push("--model", options.model);
-  if (options.reasoningEffort)
-    args.push("-c", `model_reasoning_effort=\"${options.reasoningEffort}\"`);
+  const model = options.model ?? "gpt-5.6-luna";
+  const reasoningEffort = options.reasoningEffort ?? "medium";
+  args.push("--model", model);
+  args.push("-c", `model_reasoning_effort=\"${reasoningEffort}\"`);
   args.push(options.prompt);
   return args;
 }
@@ -73,11 +77,13 @@ export async function runFiniteCodexWorker(
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
   });
+  const startedAt = Date.now();
   const log = createWriteStream(options.logPath, { flags: "a" });
   let buffer = "";
   let stderrTail = "";
   let finalText: string | undefined;
   let turnCompleted = false;
+  let usage: Record<string, unknown> | undefined;
   let failure: Error | undefined;
   let timedOut = false;
   let settled = false;
@@ -103,6 +109,7 @@ export async function runFiniteCodexWorker(
       finalText = event.item.text;
     } else if (event.type === "turn.completed") {
       turnCompleted = true;
+      if (event.usage && typeof event.usage === "object") usage = event.usage;
     } else if (event.type === "turn.failed") {
       failure = workerError(
         "CODEX_WORKER_TURN_FAILED",
@@ -133,6 +140,54 @@ export async function runFiniteCodexWorker(
     if (timer) clearTimeout(timer);
     if (buffer) parseLine(buffer);
     await closeLog();
+    const inputTokens =
+      typeof usage?.input_tokens === "number" ? usage.input_tokens : null;
+    const cachedInputTokens =
+      typeof usage?.cached_input_tokens === "number"
+        ? usage.cached_input_tokens
+        : null;
+    const outputTokens =
+      typeof usage?.output_tokens === "number" ? usage.output_tokens : null;
+    const totalTokens =
+      typeof usage?.total_tokens === "number"
+        ? usage.total_tokens
+        : inputTokens !== null && outputTokens !== null
+          ? inputTokens + outputTokens
+          : null;
+    const failureSignature = failure
+      ? failure.message.split(":", 1)[0]
+      : timedOut
+        ? "CODEX_WORKER_TIMEOUT"
+        : code !== 0
+          ? "CODEX_WORKER_PROCESS_FAILED"
+          : !turnCompleted
+            ? "CODEX_WORKER_NO_TURN_COMPLETED"
+            : typeof finalText !== "string"
+              ? "CODEX_WORKER_NO_FINAL_AGENT_MESSAGE"
+              : null;
+    await recordUsageLedger(options.projectRoot, {
+      timestamp: new Date().toISOString(),
+      role: "worker",
+      provider: "codex",
+      model: options.model ?? "gpt-5.6-luna",
+      reasoning_effort: options.reasoningEffort ?? "medium",
+      phase: "WORKER",
+      run_id: options.runId ?? null,
+      round: options.round ?? null,
+      duration: Date.now() - startedAt,
+      input_tokens: inputTokens,
+      cached_input_tokens: cachedInputTokens,
+      output_tokens: outputTokens,
+      total_tokens: totalTokens,
+      tokens_available: [
+        inputTokens,
+        cachedInputTokens,
+        outputTokens,
+        totalTokens,
+      ].some((value) => value !== null),
+      fallback_from: null,
+      failure_signature: failureSignature,
+    });
     if (failure) throw failure;
     if (timedOut)
       throw workerError(
