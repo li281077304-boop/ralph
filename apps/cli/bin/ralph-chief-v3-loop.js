@@ -44,6 +44,28 @@ function result(status, state, extra = {}) {
   return { status, runState: state, ...extra };
 }
 
+const DEFAULT_CHIEF_RETRY_INTERVAL_MS = 15_000;
+const DEFAULT_CHIEF_WAIT_BUDGET_MS = 180_000;
+
+function waitingKind(state) {
+  if (state.phase !== "WAITING_FOR_CHIEF") return undefined;
+  if (state.waiting_handoff?.kind === "select") return "select";
+  if (state.waiting_handoff?.kind === "review") return "review";
+  throw new Error(
+    `V3 Big Loop cannot route WAITING_FOR_CHIEF kind ${String(state.waiting_handoff?.kind)}`
+  );
+}
+
+function isTransientChiefError(error) {
+  const code = error?.code;
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    code === "ASSISTANT_REPLY_TIMEOUT" ||
+    code === "ASSISTANT_REPLY_INCOMPLETE" ||
+    /ASSISTANT_REPLY_TIMEOUT|ASSISTANT_REPLY_INCOMPLETE/.test(message)
+  );
+}
+
 async function updateTelemetry(projectRoot, runId, patch) {
   const path = join(getChiefRunDir(projectRoot, runId), "telemetry.json");
   let current = {};
@@ -55,6 +77,7 @@ async function updateTelemetry(projectRoot, runId, patch) {
   const next = { version: 1, ...current, ...patch };
   if (!next.run_started_at) next.run_started_at = new Date().toISOString();
   await writeJsonAtomic(path, next);
+  return next;
 }
 
 function phaseMessage(state) {
@@ -124,15 +147,35 @@ export async function runV3BigLoop(options) {
       }),
   };
   const maxIterations = options.maxIterations ?? config.max_iterations;
+  const sleep =
+    options.sleep ??
+    ((milliseconds) =>
+      new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)));
+  const now = options.now ?? (() => Date.now());
+  const retryIntervalMs = Math.max(
+    0,
+    options.chiefRetryIntervalMs ??
+      config.chief_retry_interval_ms ??
+      DEFAULT_CHIEF_RETRY_INTERVAL_MS
+  );
+  const waitBudgetMs = Math.max(
+    0,
+    options.chiefWaitBudgetMs ??
+      (config.timeout_seconds ?? DEFAULT_CHIEF_WAIT_BUDGET_MS / 1000) * 1000
+  );
   let dispatches = 0;
+  let waitContext;
+  let chiefRetryCount = 0;
   const resumedAt = new Date().toISOString();
-  await updateTelemetry(projectRoot, runId, {
+  const initialTelemetry = await updateTelemetry(projectRoot, runId, {
     run_id: runId,
     run_last_resumed_at: resumedAt,
   });
+  chiefRetryCount = Number(initialTelemetry.chief_retry_count) || 0;
 
   while (true) {
     const state = await loadState(projectRoot, runId);
+    if (state.phase !== "WAITING_FOR_CHIEF") waitContext = undefined;
     if (state.round > maxIterations)
       return result("MAX_ITERATIONS_REACHED", state, {
         reason: `max_iterations=${maxIterations}`,
@@ -152,6 +195,14 @@ export async function runV3BigLoop(options) {
         nextPhase: state.phase,
         dispatches,
       });
+
+    const currentWaitingKind = waitingKind(state);
+    if (currentWaitingKind && waitContext?.kind !== currentWaitingKind) {
+      waitContext = {
+        kind: currentWaitingKind,
+        startedAt: now(),
+      };
+    }
 
     let handler;
     if (state.phase === "SELECT" && state.status === "running")
@@ -176,9 +227,7 @@ export async function runV3BigLoop(options) {
       handler = handlers.finalReview;
     else if (isWaitingFor(state, "review")) handler = handlers.review;
     else if (state.phase === "WAITING_FOR_CHIEF")
-      throw new Error(
-        `V3 Big Loop cannot route WAITING_FOR_CHIEF kind ${String(state.waiting_handoff?.kind)}`
-      );
+      throw new Error("V3 Big Loop cannot route WAITING_FOR_CHIEF");
     else
       throw new Error(
         `V3 Big Loop cannot route phase ${state.phase} with status ${state.status}`
@@ -206,12 +255,52 @@ export async function runV3BigLoop(options) {
     } catch (error) {
       const current = await loadState(projectRoot, runId).catch(() => state);
       const reason = error instanceof Error ? error.message : String(error);
-      if (current.phase === "WAITING_FOR_CHIEF")
-        return result("WAITING_FOR_CHIEF", current, { reason, dispatches });
       if (current.phase === "HUMAN_REQUIRED")
         return result("HUMAN_REQUIRED", current, { reason, dispatches });
       if (current.phase === "FAILED")
         return result("FAILED", current, { reason, dispatches });
+      const currentKind = waitingKind(current);
+      if (currentKind && isTransientChiefError(error)) {
+        if (!waitContext || waitContext.kind !== currentKind) {
+          waitContext = { kind: currentKind, startedAt: now() };
+        }
+        const elapsed = Math.max(0, now() - waitContext.startedAt);
+        const remaining = waitBudgetMs - elapsed;
+        if (remaining <= 0) {
+          const exhaustedAt = new Date().toISOString();
+          await updateTelemetry(projectRoot, runId, {
+            chief_retry_count: chiefRetryCount,
+            chief_last_error: reason,
+            chief_wait_budget_exhausted_at: exhaustedAt,
+            chief_wait_budget_exhausted: true,
+          });
+          return result("WAITING_FOR_CHIEF", current, {
+            reason,
+            dispatches,
+            waitBudgetExhausted: true,
+            chiefRetryCount,
+          });
+        }
+        chiefRetryCount += 1;
+        await updateTelemetry(projectRoot, runId, {
+          chief_retry_count: chiefRetryCount,
+          chief_last_error: reason,
+          chief_last_retry_at: new Date().toISOString(),
+          chief_wait_budget_ms: waitBudgetMs,
+          chief_wait_started_at: new Date(waitContext.startedAt).toISOString(),
+          chief_wait_budget_exhausted: false,
+        });
+        const delay = Math.min(retryIntervalMs, remaining);
+        if (delay > 0) await sleep(delay);
+        continue;
+      }
+      if (current.phase === "WAITING_FOR_CHIEF")
+        return result("WAITING_FOR_CHIEF", current, {
+          reason,
+          dispatches,
+          waitBudgetExhausted: false,
+          chiefRetryCount,
+        });
       throw error;
     }
   }
@@ -247,7 +336,7 @@ export async function main(argv = process.argv.slice(2)) {
     },
   });
   process.stdout.write(
-    `当前状态：${outcome.status}\n停止原因：${outcome.reason ?? outcome.runState.stop_reason ?? "无"}\n下一步：${outcome.nextPhase ? `进入${outcome.nextPhase}阶段` : outcome.status === "TASK_PASS" ? "任务已完成" : outcome.status === "WAITING_FOR_CHIEF" ? "恢复外部总工后重新运行同一命令" : "按当前状态继续或处理阻塞"}\n`
+    `当前状态：${outcome.status}\n停止原因：${outcome.reason ?? outcome.runState.stop_reason ?? "无"}\n下一步：${outcome.nextPhase ? `进入${outcome.nextPhase}阶段` : outcome.status === "TASK_PASS" ? "任务已完成" : outcome.status === "WAITING_FOR_CHIEF" ? (outcome.waitBudgetExhausted ? "等待预算耗尽，状态已落盘，可恢复" : "外部总工暂时不可用，状态已落盘") : "按当前状态继续或处理阻塞"}\n`
   );
   if (outcome.status === "FAILED" || outcome.status === "HUMAN_REQUIRED")
     process.exitCode = outcome.status === "FAILED" ? 1 : 2;

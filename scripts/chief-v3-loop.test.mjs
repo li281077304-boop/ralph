@@ -25,7 +25,7 @@ function harness(initial, maxIterations = 8) {
     },
     run(overrides = {}) {
       return runV3BigLoop({
-        projectRoot: "/tmp/v3-loop-test",
+        projectRoot: overrides.projectRoot ?? "/tmp/v3-loop-test",
         runId: "loop-test",
         config: { chief_mode: "external", max_iterations: maxIterations },
         loadState: async () => structuredClone(state),
@@ -119,6 +119,96 @@ test("WAITING SELECT and WAITING REVIEW reuse their existing route", async () =>
     const result = await h.run();
     assert.equal(result.status, "TASK_PASS");
     assert.deepEqual(h.order, [kind]);
+  }
+});
+
+test("transient Chief timeout retries inside one unattended invocation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ralph-v3-loop-retry-"));
+  const h = harness(running("CHIEF_REVIEW"));
+  let reviewCalls = 0;
+  const sleeps = [];
+  let clock = 0;
+  h.phaseHandlers.review = async () => {
+    reviewCalls += 1;
+    h.order.push("review");
+    if (reviewCalls === 1) {
+      h.setState({
+        ...running("WAITING_FOR_CHIEF"),
+        status: "waiting",
+        waiting_handoff: { kind: "review" },
+      });
+      const error = new Error("ASSISTANT_REPLY_TIMEOUT");
+      error.code = "ASSISTANT_REPLY_TIMEOUT";
+      throw error;
+    }
+    h.setState({ ...running("DONE", 1, null), status: "done" });
+  };
+  try {
+    const result = await h.run({
+      projectRoot: root,
+      chiefRetryIntervalMs: 15,
+      chiefWaitBudgetMs: 100,
+      now: () => clock,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        clock += milliseconds;
+      },
+    });
+    assert.equal(result.status, "TASK_PASS");
+    assert.equal(reviewCalls, 2);
+    assert.deepEqual(sleeps, [15]);
+    assert.deepEqual(h.order, ["review", "review"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("persistent Chief timeout stops only after automatic wait budget", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ralph-v3-loop-budget-"));
+  const h = harness(running("CHIEF_REVIEW"));
+  let reviewCalls = 0;
+  const sleeps = [];
+  let clock = 0;
+  h.phaseHandlers.review = async () => {
+    reviewCalls += 1;
+    h.setState({
+      ...running("WAITING_FOR_CHIEF"),
+      status: "waiting",
+      waiting_handoff: { kind: "review" },
+    });
+    const error = new Error("ASSISTANT_REPLY_TIMEOUT");
+    error.code = "ASSISTANT_REPLY_TIMEOUT";
+    throw error;
+  };
+  try {
+    const result = await h.run({
+      projectRoot: root,
+      chiefRetryIntervalMs: 10,
+      chiefWaitBudgetMs: 25,
+      now: () => clock,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        clock += milliseconds;
+      },
+    });
+    assert.equal(result.status, "WAITING_FOR_CHIEF");
+    assert.equal(result.waitBudgetExhausted, true);
+    assert.equal(result.runState.phase, "WAITING_FOR_CHIEF");
+    assert.equal(result.runState.status, "waiting");
+    assert.equal(result.chiefRetryCount, 3);
+    assert.equal(reviewCalls, 4);
+    assert.deepEqual(sleeps, [10, 10, 5]);
+    const telemetry = JSON.parse(
+      await readFile(
+        join(root, ".ralph", "chief-runs", "loop-test", "telemetry.json"),
+        "utf8"
+      )
+    );
+    assert.equal(telemetry.chief_retry_count, 3);
+    assert.equal(telemetry.chief_wait_budget_exhausted, true);
+    assert.equal(telemetry.chief_last_error, "ASSISTANT_REPLY_TIMEOUT");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
