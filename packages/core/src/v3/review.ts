@@ -49,6 +49,13 @@ export interface ChiefReviewDecision {
   patch_instructions: string[];
   human_question: string;
   human_options: string[];
+  next_worker_task?: {
+    objective: string;
+    technical_direction: string;
+    avoid_previous_routes: string[];
+    acceptance: string[];
+    evidence_to_check: string[];
+  };
   run_id: string;
   round: number;
   handoff_hash: string;
@@ -218,6 +225,7 @@ export function parseChiefReviewDecision(value: unknown): ChiefReviewDecision {
       "patch_instructions",
       "human_question",
       "human_options",
+      "next_worker_task",
       "run_id",
       "round",
       "handoff_hash",
@@ -252,6 +260,38 @@ export function parseChiefReviewDecision(value: unknown): ChiefReviewDecision {
   stringArray(value.patch_instructions, "patch_instructions");
   stringValue(value.human_question, "human_question");
   stringArray(value.human_options, "human_options");
+  if (value.next_worker_task !== undefined) {
+    if (!record(value.next_worker_task))
+      fail("next_worker_task must be an object");
+    exactKeys(
+      value.next_worker_task,
+      [
+        "objective",
+        "technical_direction",
+        "avoid_previous_routes",
+        "acceptance",
+        "evidence_to_check",
+      ],
+      "next_worker_task"
+    );
+    nonEmpty(value.next_worker_task.objective, "next_worker_task.objective");
+    nonEmpty(
+      value.next_worker_task.technical_direction,
+      "next_worker_task.technical_direction"
+    );
+    stringArray(
+      value.next_worker_task.avoid_previous_routes,
+      "next_worker_task.avoid_previous_routes"
+    );
+    stringArray(
+      value.next_worker_task.acceptance,
+      "next_worker_task.acceptance"
+    );
+    stringArray(
+      value.next_worker_task.evidence_to_check,
+      "next_worker_task.evidence_to_check"
+    );
+  }
   nonEmpty(value.run_id, "run_id");
   if (
     typeof value.round !== "number" ||

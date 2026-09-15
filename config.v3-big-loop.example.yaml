@@ -12,7 +12,8 @@ chief:
 
 worker:
   agent: codex
-  mode: native_goal
+  # finite, bounded worker invocation; native_goal is legacy compatibility
+  mode: stage
   model: gpt-5.6-luna
 
 # Only required when chief_mode: external:

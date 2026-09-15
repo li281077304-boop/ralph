@@ -2,7 +2,7 @@
 
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { readFile } from "node:fs/promises";
+import { readFile, cp, mkdir } from "node:fs/promises";
 
 import {
   getChiefRunDir,
@@ -10,6 +10,7 @@ import {
   loadRunState,
   runV3WorkSlice,
   runIntegrationUatPhase,
+  createIsolatedWorktree,
   writeJsonAtomic,
   summarizeObligations,
   syncObligationsFromProject,
@@ -18,6 +19,7 @@ import { runV3SelectTransport } from "./ralph-chief-v3-select.js";
 import { runV3ReviewTransport } from "./ralph-chief-v3-review.js";
 import { createV3CodexChiefTransport } from "./ralph-chief-v3-codex.js";
 import { runV3RecoveryTransport } from "./ralph-chief-v3-recovery.js";
+import { runExternalChiefGuiRoundtrip } from "./ralph-gui-chief-bridge.js";
 
 function runStatePath(projectRoot, runId) {
   return join(getChiefRunDir(projectRoot, runId), "RUN_STATE.json");
@@ -25,7 +27,9 @@ function runStatePath(projectRoot, runId) {
 
 function workConfig(config) {
   return {
-    worker: config.worker,
+    // Finite stage turns are the production default. Native Goal remains an
+    // explicit compatibility mode for legacy runs only.
+    worker: { ...config.worker, mode: config.worker?.mode ?? "stage" },
     commands: config.commands,
     timeout_seconds: config.timeout_seconds,
     gate_allowed_paths: config.gate_allowed_paths,
@@ -35,6 +39,33 @@ function workConfig(config) {
     max_diff_bytes: config.max_diff_bytes,
     max_changed_paths: config.max_changed_paths,
     remote: config.remote,
+  };
+}
+
+async function recordChiefRouteTelemetry(projectRoot, runId, patch) {
+  await updateTelemetry(projectRoot, runId, patch);
+}
+
+/** External-first route with deterministic host fallback. */
+export function createExternalFirstChiefTransport({
+  primary,
+  fallback,
+  onPrimaryAttempt,
+  onPrimarySuccess,
+  onFallback,
+}) {
+  return async (request) => {
+    await onPrimaryAttempt?.(request);
+    try {
+      const result = await primary(request);
+      if (!result || typeof result.reply !== "string")
+        throw new Error("Chief transport returned no reply");
+      await onPrimarySuccess?.(request, result);
+      return result;
+    } catch (error) {
+      await onFallback?.(request, error);
+      return fallback(request, error);
+    }
   };
 }
 
@@ -107,38 +138,98 @@ function telemetryPhaseKey(phase) {
 
 /** Route durable V3 phases; each existing runner owns its own writer lock. */
 export async function runV3BigLoop(options) {
-  const projectRoot = resolve(options.projectRoot);
+  let projectRoot = resolve(options.projectRoot);
   const runId = options.runId;
+  if (options.isolatedWorktree) {
+    const isolation = await createIsolatedWorktree({
+      projectRoot,
+      runId,
+      baseCommit: options.baseCommit,
+      worktreePath: options.worktreePath,
+    });
+    const sourceRun = join(projectRoot, ".ralph", "chief-runs", runId);
+    const targetRun = join(
+      isolation.worktreePath,
+      ".ralph",
+      "chief-runs",
+      runId
+    );
+    await mkdir(join(targetRun, ".."), { recursive: true });
+    await cp(sourceRun, targetRun, { recursive: true, force: false }).catch(
+      (error) => {
+        if (error?.code !== "EEXIST" && error?.code !== "ENOENT") throw error;
+      }
+    );
+    projectRoot = isolation.worktreePath;
+  }
   const config = options.config ?? loadChiefConfig(options.configPath);
   if (
     !options.phaseHandlers &&
     !["codex", "external"].includes(config.chief_mode)
   )
     throw new Error("V3 Big Loop requires chief_mode: codex or external");
-  const codexTransport =
-    config.chief_mode === "codex"
-      ? (logName) =>
-          createV3CodexChiefTransport({
-            projectRoot,
-            runId,
-            chiefConfig: config.chief,
-            logName,
-            timeout_seconds: config.timeout_seconds,
-          })
-      : undefined;
+  const codexTransport = (logName) =>
+    createV3CodexChiefTransport({
+      projectRoot,
+      runId,
+      chiefConfig: config.chief,
+      logName,
+      timeout_seconds: config.timeout_seconds,
+    });
+  const externalTransport = (request) =>
+    runExternalChiefGuiRoundtrip(config.gui_bridge, request);
+  const runChiefPhase = async (route, externalRun, hostRun) => {
+    if (config.chief_mode === "codex") {
+      await recordChiefRouteTelemetry(projectRoot, runId, {
+        chief_provider: "host_codex",
+        [`${route}_host_sol_used`]: true,
+      });
+      return hostRun();
+    }
+    await recordChiefRouteTelemetry(projectRoot, runId, {
+      chief_provider: "external",
+      [`${route}_external_attempted`]: true,
+    });
+    try {
+      const result = await externalRun();
+      await recordChiefRouteTelemetry(projectRoot, runId, {
+        [`${route}_external_successes`]: 1,
+      });
+      return result;
+    } catch (error) {
+      await recordChiefRouteTelemetry(projectRoot, runId, {
+        [`${route}_external_failures`]: 1,
+        [`${route}_fallback_reason`]:
+          error instanceof Error ? error.message : String(error),
+        [`${route}_host_sol_fallbacks`]: 1,
+        chief_provider: "host_codex_fallback",
+      });
+      return hostRun();
+    }
+  };
   const loadState =
     options.loadState ?? (() => loadRunState(runStatePath(projectRoot, runId)));
   const handlers = options.phaseHandlers ?? {
     select: () =>
-      runV3SelectTransport({
-        projectRoot,
-        runId,
-        devlogRoot: options.devlogRoot,
-        guiConfig: config.gui_bridge,
-        ...(codexTransport
-          ? { transport: codexTransport("codex-chief-select.ndjson") }
-          : {}),
-      }),
+      runChiefPhase(
+        "select",
+        () =>
+          runV3SelectTransport({
+            projectRoot,
+            runId,
+            devlogRoot: options.devlogRoot,
+            guiConfig: config.gui_bridge,
+            transport: externalTransport,
+          }),
+        () =>
+          runV3SelectTransport({
+            projectRoot,
+            runId,
+            devlogRoot: options.devlogRoot,
+            guiConfig: config.gui_bridge,
+            transport: codexTransport("codex-chief-select.ndjson"),
+          })
+      ),
     work: () =>
       runV3WorkSlice({
         projectRoot,
@@ -147,16 +238,27 @@ export async function runV3BigLoop(options) {
         config: workConfig(config),
       }),
     review: () =>
-      runV3ReviewTransport({
-        projectRoot,
-        runId,
-        devlogRoot: options.devlogRoot,
-        guiConfig: config.gui_bridge,
-        reviewStage: "chief",
-        ...(codexTransport
-          ? { transport: codexTransport("codex-chief-review.ndjson") }
-          : {}),
-      }),
+      runChiefPhase(
+        "review",
+        () =>
+          runV3ReviewTransport({
+            projectRoot,
+            runId,
+            devlogRoot: options.devlogRoot,
+            guiConfig: config.gui_bridge,
+            reviewStage: "chief",
+            transport: externalTransport,
+          }),
+        () =>
+          runV3ReviewTransport({
+            projectRoot,
+            runId,
+            devlogRoot: options.devlogRoot,
+            guiConfig: config.gui_bridge,
+            reviewStage: "chief",
+            transport: codexTransport("codex-chief-review.ndjson"),
+          })
+      ),
     uat: () =>
       runIntegrationUatPhase({
         projectRoot,
@@ -168,26 +270,47 @@ export async function runV3BigLoop(options) {
         },
       }),
     finalReview: () =>
-      runV3ReviewTransport({
-        projectRoot,
-        runId,
-        devlogRoot: options.devlogRoot,
-        guiConfig: config.gui_bridge,
-        reviewStage: "final",
-        ...(codexTransport
-          ? { transport: codexTransport("codex-chief-final-review.ndjson") }
-          : {}),
-      }),
+      runChiefPhase(
+        "final_review",
+        () =>
+          runV3ReviewTransport({
+            projectRoot,
+            runId,
+            devlogRoot: options.devlogRoot,
+            guiConfig: config.gui_bridge,
+            reviewStage: "final",
+            transport: externalTransport,
+          }),
+        () =>
+          runV3ReviewTransport({
+            projectRoot,
+            runId,
+            devlogRoot: options.devlogRoot,
+            guiConfig: config.gui_bridge,
+            reviewStage: "final",
+            transport: codexTransport("codex-chief-final-review.ndjson"),
+          })
+      ),
     recovery: () =>
-      runV3RecoveryTransport({
-        projectRoot,
-        runId,
-        chiefConfig: config.chief,
-        timeout_seconds: config.timeout_seconds,
-        ...(codexTransport
-          ? { transport: codexTransport("codex-chief-recovery.ndjson") }
-          : {}),
-      }),
+      runChiefPhase(
+        "recovery",
+        () =>
+          runV3RecoveryTransport({
+            projectRoot,
+            runId,
+            chiefConfig: config.chief,
+            timeout_seconds: config.timeout_seconds,
+            transport: externalTransport,
+          }),
+        () =>
+          runV3RecoveryTransport({
+            projectRoot,
+            runId,
+            chiefConfig: config.chief,
+            timeout_seconds: config.timeout_seconds,
+            transport: codexTransport("codex-chief-recovery.ndjson"),
+          })
+      ),
   };
   const maxIterations = options.maxIterations ?? config.max_iterations;
   const sleep =

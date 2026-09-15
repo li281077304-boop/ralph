@@ -189,6 +189,7 @@ export {
   type V3WorkConfig,
   type V3WorkResult,
 } from "./v3/work.js";
+export { createIsolatedWorktree } from "./v3/isolation.js";
 export {
   runAutonomousObligationLoop,
   type AutonomousEvent,

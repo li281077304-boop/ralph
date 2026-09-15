@@ -494,6 +494,17 @@ export function buildWorkerPrompt(
           ).review_decision?.patch_instructions,
         }
       : (selectDecision ?? {});
+  if (
+    selectDecision &&
+    typeof selectDecision === "object" &&
+    "next_worker_task" in selectDecision
+  ) {
+    (context as Record<string, unknown>).next_worker_task = (
+      selectDecision as { next_worker_task?: unknown }
+    ).next_worker_task;
+    (context as Record<string, unknown>).continuation =
+      (context as Record<string, unknown>).continuation ?? "CHIEF_REPLAN";
+  }
   const contextText = JSON.stringify(context, null, 2);
   const boundedContext =
     contextText.length <= 2400

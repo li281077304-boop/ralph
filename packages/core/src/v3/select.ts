@@ -46,6 +46,13 @@ export interface ChiefSelectDecision {
   human_question: string;
   human_options: string[];
   uat_scope: string;
+  next_worker_task?: {
+    objective: string;
+    technical_direction: string;
+    avoid_previous_routes: string[];
+    acceptance: string[];
+    evidence_to_check: string[];
+  };
   run_id: string;
   round: number;
   handoff_hash: string;
@@ -189,6 +196,7 @@ export function parseChiefSelectDecision(value: unknown): ChiefSelectDecision {
       "human_question",
       "human_options",
       "uat_scope",
+      "next_worker_task",
       "run_id",
       "round",
       "handoff_hash",
@@ -231,6 +239,38 @@ export function parseChiefSelectDecision(value: unknown): ChiefSelectDecision {
   stringValue(value.human_question, "human_question");
   stringArray(value.human_options, "human_options");
   stringValue(value.uat_scope, "uat_scope");
+  if (value.next_worker_task !== undefined) {
+    if (!record(value.next_worker_task))
+      fail("next_worker_task must be an object");
+    exactKeys(
+      value.next_worker_task,
+      [
+        "objective",
+        "technical_direction",
+        "avoid_previous_routes",
+        "acceptance",
+        "evidence_to_check",
+      ],
+      "next_worker_task"
+    );
+    nonEmpty(value.next_worker_task.objective, "next_worker_task.objective");
+    nonEmpty(
+      value.next_worker_task.technical_direction,
+      "next_worker_task.technical_direction"
+    );
+    stringArray(
+      value.next_worker_task.avoid_previous_routes,
+      "next_worker_task.avoid_previous_routes"
+    );
+    stringArray(
+      value.next_worker_task.acceptance,
+      "next_worker_task.acceptance"
+    );
+    stringArray(
+      value.next_worker_task.evidence_to_check,
+      "next_worker_task.evidence_to_check"
+    );
+  }
   nonEmpty(value.run_id, "run_id");
   if (
     typeof value.round !== "number" ||
@@ -288,6 +328,8 @@ export function validateChiefSelectDecision(
         fail("RUN_INTEGRATION_UAT requires uat_scope");
       if (decision.human_question !== "" || decision.human_options.length !== 0)
         fail("RUN_INTEGRATION_UAT cannot include human fields");
+      if (decision.next_worker_task !== undefined)
+        fail("RUN_INTEGRATION_UAT cannot include next_worker_task");
       break;
     case "HUMAN_REQUIRED":
       if (decision.selected_task_id !== null)
@@ -296,6 +338,8 @@ export function validateChiefSelectDecision(
         fail("HUMAN_REQUIRED requires human_question");
       if (decision.uat_scope !== "")
         fail("HUMAN_REQUIRED cannot include uat_scope");
+      if (decision.next_worker_task !== undefined)
+        fail("HUMAN_REQUIRED cannot include next_worker_task");
       break;
     case "REQUEST_FINAL_REVIEW":
       if (decision.selected_task_id !== null)
@@ -306,6 +350,8 @@ export function validateChiefSelectDecision(
         decision.uat_scope !== ""
       )
         fail("REQUEST_FINAL_REVIEW cannot include control fields");
+      if (decision.next_worker_task !== undefined)
+        fail("REQUEST_FINAL_REVIEW cannot include next_worker_task");
       break;
   }
 }

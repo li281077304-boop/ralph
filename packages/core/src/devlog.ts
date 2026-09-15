@@ -203,17 +203,20 @@ export async function buildRecentDevlogContext(
   options: number | { limit?: number; maxChars?: number } = {}
 ): Promise<string> {
   const limit =
-    typeof options === "number" ? options : Math.max(0, options.limit ?? 3);
+    typeof options === "number" ? options : Math.max(0, options.limit ?? 5);
   const maxChars =
     typeof options === "number"
       ? 12_000
       : Math.max(512, options.maxChars ?? 12_000);
   try {
     const index = await readFile(join(root, "devlog", "INDEX.md"), "utf8");
-    const lines = index
+    const indexedLines = index
       .split("\n")
-      .filter((line) => line.startsWith("- "))
-      .slice(-Math.max(0, limit));
+      .filter((line) => line.startsWith("- "));
+    const lines =
+      limit <= 1 || indexedLines.length <= limit
+        ? indexedLines.slice(-Math.max(0, limit))
+        : [indexedLines[0], ...indexedLines.slice(-(limit - 1))];
     if (!lines.length) return "Recent devlog entries: none";
     const entries = [];
     for (const line of lines) {
