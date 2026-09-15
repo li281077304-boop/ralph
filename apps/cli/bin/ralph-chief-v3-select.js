@@ -146,13 +146,16 @@ export async function runV3SelectTransport(options) {
       identity: preparation.handoff.handoff_hash,
       message: chiefSelectPrompt(preparation),
       closingMarker: SELECT_CLOSE_MARKER,
+      runId,
+      round: runState.round,
+      handoffHash: preparation.handoff.handoff_hash,
     };
     const transport =
       options.transport ??
       ((value) => runExternalChiefGuiRoundtrip(options.guiConfig, value));
     const result = await transport(request);
     if (!result || typeof result.reply !== "string")
-      throw new Error("External Chief GUI transport returned no reply");
+      throw new Error("Chief transport returned no reply");
     const rawDecision = extractMarkedJsonBlock(
       result.reply,
       SELECT_OPEN_MARKER,

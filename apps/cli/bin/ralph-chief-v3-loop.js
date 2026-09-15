@@ -14,6 +14,7 @@ import {
 } from "@daonhan/ralph-core";
 import { runV3SelectTransport } from "./ralph-chief-v3-select.js";
 import { runV3ReviewTransport } from "./ralph-chief-v3-review.js";
+import { createV3CodexChiefTransport } from "./ralph-chief-v3-codex.js";
 
 function runStatePath(projectRoot, runId) {
   return join(getChiefRunDir(projectRoot, runId), "RUN_STATE.json");
@@ -104,8 +105,22 @@ export async function runV3BigLoop(options) {
   const projectRoot = resolve(options.projectRoot);
   const runId = options.runId;
   const config = options.config ?? loadChiefConfig(options.configPath);
-  if (!options.phaseHandlers && config.chief_mode !== "external")
-    throw new Error("V3 Big Loop requires chief_mode: external");
+  if (
+    !options.phaseHandlers &&
+    !["codex", "external"].includes(config.chief_mode)
+  )
+    throw new Error("V3 Big Loop requires chief_mode: codex or external");
+  const codexTransport =
+    config.chief_mode === "codex"
+      ? (logName) =>
+          createV3CodexChiefTransport({
+            projectRoot,
+            runId,
+            chiefConfig: config.chief,
+            logName,
+            runStage: options.runStage,
+          })
+      : undefined;
   const loadState =
     options.loadState ?? (() => loadRunState(runStatePath(projectRoot, runId)));
   const handlers = options.phaseHandlers ?? {
@@ -114,6 +129,9 @@ export async function runV3BigLoop(options) {
         projectRoot,
         runId,
         guiConfig: config.gui_bridge,
+        ...(codexTransport
+          ? { transport: codexTransport("codex-chief-select.ndjson") }
+          : {}),
       }),
     work: () =>
       runV3WorkSlice({
@@ -127,6 +145,9 @@ export async function runV3BigLoop(options) {
         runId,
         guiConfig: config.gui_bridge,
         reviewStage: "chief",
+        ...(codexTransport
+          ? { transport: codexTransport("codex-chief-review.ndjson") }
+          : {}),
       }),
     uat: () =>
       runIntegrationUatPhase({
@@ -144,6 +165,9 @@ export async function runV3BigLoop(options) {
         runId,
         guiConfig: config.gui_bridge,
         reviewStage: "final",
+        ...(codexTransport
+          ? { transport: codexTransport("codex-chief-final-review.ndjson") }
+          : {}),
       }),
   };
   const maxIterations = options.maxIterations ?? config.max_iterations;

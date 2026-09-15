@@ -251,7 +251,7 @@ export async function runV3ReviewTransport(options) {
       result
     );
     if (!result || typeof result.reply !== "string")
-      throw new Error("External Chief GUI transport returned no reply");
+      throw new Error("Chief transport returned no reply");
     const raw = extractMarkedJsonBlock(
       result.reply,
       REVIEW_OPEN_MARKER,
