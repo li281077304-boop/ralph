@@ -15,6 +15,11 @@ import {
 export async function runCodexTask(options) {
   const root = resolve(options.repoRoot);
   const agentTask = options.task ?? (await readFile(options.taskFile, "utf8"));
+  const minimal = options.minimalContext === true || options.testMode === true;
+  let context = options.context;
+  if (options.contextFile)
+    context = await readFile(options.contextFile, "utf8");
+  if (!context && !minimal) throw new Error("DEVLOG_CONTEXT_REQUIRED");
   const devlogRoot = resolve(options.devlogRoot ?? root);
   const entry = await createDevlogHandoff({
     root: devlogRoot,
@@ -24,13 +29,22 @@ export async function runCodexTask(options) {
     taskId: options.taskId,
     date: options.date,
     context:
-      options.context ??
+      context ??
       [
+        "USER OBSERVATION",
+        "Explicit test-mode handoff has no discussion context requirement.",
         "CONFIRMED FACT",
         `repo: ${root}`,
+        "TECHNICAL ASSESSMENT",
+        "This is an explicitly minimal mechanical smoke invocation.",
+        "REJECTED ASSUMPTIONS",
+        "Minimal mode is not a formal development context.",
         "DECISION",
-        "Persist this exact task before invoking Codex.",
+        "Persist and validate the exact task before invoking Codex.",
+        "UNKNOWN / OPEN RISKS",
+        "No formal product decision is being made in this test.",
       ].join("\n"),
+    mode: minimal ? "minimal" : "formal",
     agentTask,
   });
   await validateDevlogHandoff(entry);
@@ -149,9 +163,15 @@ function parseArgs(argv) {
         "--role",
         "--model",
         "--reasoning-effort",
+        "--context-file",
+        "--minimal-context",
       ].includes(arg)
     )
       throw new Error(`Unknown argument: ${arg}`);
+    if (arg === "--minimal-context") {
+      values.minimal_context = true;
+      continue;
+    }
     const value = argv[++index];
     if (!value || value.startsWith("--"))
       throw new Error(`${arg} requires a value`);
@@ -177,6 +197,8 @@ export async function main(argv = process.argv.slice(2)) {
     role: args.role,
     model: args.model,
     reasoningEffort: args.reasoning_effort,
+    contextFile: args.context_file,
+    minimalContext: args.minimal_context === true,
   });
   process.stdout.write(result.stdout);
   return 0;

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findFirstEditableInput } from "../apps/cli/bin/ralph-gui-chief-bridge.js";
+import {
+  extensionRoundtripCode,
+  externalChiefPreflight,
+  findFirstEditableInput,
+  realConversationUrl,
+  tabEntries,
+} from "../apps/cli/bin/ralph-gui-chief-bridge.js";
 
 class FakeCandidate {
   constructor({ visible, enabled = true, editable = true, label }) {
@@ -100,4 +106,36 @@ test("composer selection ignores visible but disabled or read-only candidates", 
   const result = await findFirstEditableInput(page, [selector]);
 
   assert.equal(result.input.label, "usable");
+});
+
+test("external chief retains autonomous acquisition and diagnostics contract", () => {
+  assert.equal(realConversationUrl("auto"), undefined);
+  assert.equal(
+    realConversationUrl("https://chatgpt.com/c/abc"),
+    "https://chatgpt.com/c/abc"
+  );
+  assert.deepEqual(tabEntries("- 2: ChatGPT (https://chatgpt.com/c/abc)\n"), [
+    { index: 2, url: "https://chatgpt.com/c/abc" },
+  ]);
+  const code = extensionRoundtripCode(
+    "https://chatgpt.com/c/abc",
+    "task",
+    "identity",
+    "<<<END>>>",
+    100,
+    { submit: true }
+  );
+  assert.match(code, /#prompt-textarea/);
+  assert.match(code, /data-testid=\\"textbox/);
+  assert.match(code, /data-testid=\\"composer-text-input/);
+  assert.match(code, /ProseMirror/);
+  assert.match(code, /page\.reload/);
+  assert.match(code, /NOT_LOGGED_IN/);
+});
+
+test("external preflight distinguishes missing configuration from a real attempt", () => {
+  assert.deepEqual(externalChiefPreflight(undefined), {
+    ok: false,
+    code: "EXTERNAL_NOT_CONFIGURED",
+  });
 });

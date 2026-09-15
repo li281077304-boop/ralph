@@ -30,6 +30,13 @@ import { runNativeGoalWorker, type GoalTransport } from "./goal-worker.js";
 import { markObligationHumanBlocked } from "./obligations.js";
 import { persistWorkerBlock, stableFailureSignature } from "./recovery.js";
 import { runFiniteCodexWorker } from "./finite-worker.js";
+import {
+  buildRecentDevlogContext,
+  createDevlogHandoff,
+  validateDevlogHandoff,
+  writeDevlogResult,
+  type DevlogEntry,
+} from "../devlog.js";
 
 export type V3WorkerConfig = {
   worker: {
@@ -616,7 +623,7 @@ export async function runWorkerPhase(options: {
   const outputPath = join(round, "worker_output.json");
   const evidencePath = join(round, "worker_evidence.json");
   const guard = new GitGuard(root, controls(options.config));
-  const before = guard.snapshot();
+  let before = guard.snapshot();
   const existingEvidence = await (async () => {
     try {
       return JSON.parse(await readFile(evidencePath, "utf8")) as Record<
@@ -711,6 +718,39 @@ export async function runWorkerPhase(options: {
   await writeTextAtomic(join(round, "worker_prompt.md"), `${prompt}\n`);
   const runner =
     options.runAgent ?? defaultRunner(options.config, root, runDir);
+  let workerDevlogEntry: DevlogEntry | undefined;
+  // Injected runners are deterministic test seams, not formal Agent
+  // invocations. Production/default runners always take the semantic gate.
+  if (options.config.worker.mode !== "native_goal" && !options.runAgent) {
+    const devlogRoot = options.devlogRoot ?? root;
+    workerDevlogEntry = await createDevlogHandoff({
+      root: devlogRoot,
+      slug: `worker-${task.id}-round-${run.round}`,
+      runId: run.run_id,
+      round: run.round,
+      taskId: task.id,
+      context: [
+        "USER OBSERVATION",
+        "The current task needs a bounded implementation Worker turn.",
+        "CONFIRMED FACT",
+        `run_id: ${run.run_id}; round: ${run.round}; task_id: ${task.id}`,
+        "TECHNICAL ASSESSMENT",
+        "Worker execution is isolated and must leave durable evidence for Gate and Chief review.",
+        "REJECTED ASSUMPTIONS",
+        "A Worker prompt or prior conversation alone is not durable completion evidence.",
+        "DECISION",
+        "Persist and validate the exact Worker task before invoking the finite Agent.",
+        "UNKNOWN / OPEN RISKS",
+        await buildRecentDevlogContext(devlogRoot),
+      ].join("\n"),
+      agentTask: prompt,
+    });
+    await validateDevlogHandoff(workerDevlogEntry);
+    // Devlog is tracked process context, not Worker output. Rebase the
+    // workspace evidence after its handoff files are durable so Gate compares
+    // only the Worker-owned changes.
+    before = guard.snapshot();
+  }
   let worker: { text: string; meta: StageMeta; error?: string };
   try {
     if (options.config.worker.mode === "native_goal") {
@@ -752,6 +792,18 @@ export async function runWorkerPhase(options: {
       error: error instanceof Error ? error.message : String(error),
     };
   }
+  if (workerDevlogEntry)
+    await writeDevlogResult(
+      workerDevlogEntry,
+      [
+        "TESTED",
+        `goal_status: ${worker.error ? "error" : "completed"}`,
+        worker.error
+          ? `error: ${worker.error}`
+          : "result persisted in worker_output.json",
+        "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+      ].join("\n")
+    );
   await writeJsonAtomic(outputPath, worker);
   if (worker.error) {
     const goalStatus = (worker as { goalStatus?: string }).goalStatus;

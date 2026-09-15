@@ -6,3 +6,4 @@
 - 2026-09-15/004-finite-worker-autonomous-chief — ralph-v3-finite-worker-autonomous-chief/1/finite-worker-autonomous-chief
 - 2026-09-15/005-project-bootstrap-real-uat — ralph-v3-project-bootstrap-real-uat/1/project-bootstrap-real-uat
 - 2026-09-15/006-model-economics — model-economics
+- 2026-09-15/007-durable-context-external-chief-recovery — durable context and External Chief recovery

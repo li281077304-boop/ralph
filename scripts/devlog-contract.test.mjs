@@ -11,6 +11,7 @@ import {
   buildRecentDevlogContext,
   createDevlogHandoff,
   validateDevlogHandoff,
+  validateSemanticContext,
   writeDevlogDecision,
   writeDevlogResult,
 } from "../packages/core/dist/index.js";
@@ -20,6 +21,40 @@ function hash(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+const semanticContext = [
+  "USER OBSERVATION",
+  "The user needs a durable formal development handoff.",
+  "CONFIRMED FACT",
+  "The target repository and current baseline are known.",
+  "TECHNICAL ASSESSMENT",
+  "The gate must reject empty or template-only discussion context.",
+  "REJECTED ASSUMPTIONS",
+  "A present file does not prove substantive context.",
+  "DECISION",
+  "Persist, read back, and validate context before invoking an Agent.",
+  "UNKNOWN / OPEN RISKS",
+  "Provider behavior remains an open operational risk.",
+].join("\n");
+
+test("semantic context gate rejects missing, placeholder, and incomplete formal context", () => {
+  assert.throws(() => validateSemanticContext(""), /DEVLOG_CONTEXT_REQUIRED/);
+  assert.throws(
+    () =>
+      validateSemanticContext(
+        "USER OBSERVATION\nA real observation is recorded."
+      ),
+    /DEVLOG_CONTEXT_SECTION_MISSING/
+  );
+  assert.throws(
+    () =>
+      validateSemanticContext(
+        "USER OBSERVATION\nN/A\nCONFIRMED FACT\nN/A\nTECHNICAL ASSESSMENT\nN/A\nREJECTED ASSUMPTIONS\nN/A\nDECISION\nN/A\nUNKNOWN / OPEN RISKS\nN/A"
+      ),
+    /DEVLOG_CONTEXT_SECTION_NOT_SUBSTANTIVE/
+  );
+  assert.doesNotThrow(() => validateSemanticContext(semanticContext));
+});
+
 test("devlog handoff is durable and hash-bound before invocation", async () => {
   const root = await mkdtemp(join(tmpdir(), "ralph-devlog-"));
   const task = "exact task text\n";
@@ -27,6 +62,7 @@ test("devlog handoff is durable and hash-bound before invocation", async () => {
     root,
     date: "2026-09-15",
     slug: "contract",
+    mode: "minimal",
     context: "USER OBSERVATION\nnot a confirmed fact",
     agentTask: task,
     runId: "run-1",
@@ -39,6 +75,7 @@ test("devlog handoff is durable and hash-bound before invocation", async () => {
   const metadata = JSON.parse(await readFile(entry.metadataPath, "utf8"));
   assert.equal(metadata.run_id, "run-1");
   assert.equal(metadata.task_id, "task-1");
+  assert.equal(metadata.mode, "minimal");
   await writeDevlogResult(
     entry,
     "TESTED\nREAL-UAT-VERIFIED: NOT-YET-VERIFIED\n"
@@ -50,6 +87,22 @@ test("devlog handoff is durable and hash-bound before invocation", async () => {
   assert.match(recent, /2026-09-15/);
   assert.match(recent, /USER OBSERVATION/);
   assert.match(recent, /not a confirmed fact/);
+});
+
+test("formal task without semantic context fails closed before spawning", async () => {
+  let spawnCount = 0;
+  await assert.rejects(
+    runCodexTask({
+      repoRoot: await mkdtemp(join(tmpdir(), "ralph-formal-context-")),
+      task: "formal task must have discussion context",
+      spawnImpl: () => {
+        spawnCount += 1;
+        throw new Error("spawned unexpectedly");
+      },
+    }),
+    /DEVLOG_CONTEXT_REQUIRED/
+  );
+  assert.equal(spawnCount, 0);
 });
 
 test("default devlog root follows repo, not the launching cwd", async () => {
@@ -72,6 +125,7 @@ test("default devlog root follows repo, not the launching cwd", async () => {
       task: "read-only repo smoke",
       spawnImpl,
       date: "2026-09-15",
+      minimalContext: true,
     });
     assert.equal(result.entry.root, repoRoot);
     assert.equal(existsSync(join(repoRoot, "devlog")), true);
@@ -97,6 +151,7 @@ test("devlog does not elevate Codex permissions", async () => {
     repoRoot: root,
     task: "policy smoke",
     spawnImpl,
+    minimalContext: true,
   });
   assert.equal(
     observedArgs.includes("--dangerously-bypass-approvals-and-sandbox"),
@@ -129,6 +184,7 @@ test("devlog write failure prevents direct Codex invocation", async () => {
         spawnCount += 1;
         throw new Error("spawned unexpectedly");
       },
+      minimalContext: true,
     }),
     /DEVLOG_HANDOFF_WRITE_FAILED/
   );
@@ -158,6 +214,7 @@ test("direct Codex launcher invokes only after validated handoff", async () => {
     task: "exact invocation payload",
     devlogRoot: root,
     spawnImpl,
+    minimalContext: true,
   });
   assert.equal(spawnCount, 1);
   assert.equal(observedTask, "exact invocation payload");

@@ -19,6 +19,7 @@ export type DevlogEntry = {
   round?: number;
   taskId?: string;
   handoffHash?: string;
+  mode: "formal" | "minimal";
 };
 
 export type DevlogHandoffOptions = {
@@ -31,7 +32,17 @@ export type DevlogHandoffOptions = {
   taskId?: string;
   handoffHash?: string;
   date?: string;
+  mode?: "formal" | "minimal";
 };
+
+export const DEVLOG_CONTEXT_SECTIONS = [
+  "USER OBSERVATION",
+  "CONFIRMED FACT",
+  "TECHNICAL ASSESSMENT",
+  "REJECTED ASSUMPTIONS",
+  "DECISION",
+  "UNKNOWN / OPEN RISKS",
+] as const;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -55,17 +66,43 @@ function dateLabel(value?: string): string {
 }
 
 function normalizeContext(context: string): string {
-  const sections = [
-    "USER OBSERVATION",
-    "CONFIRMED FACT",
-    "TECHNICAL ASSESSMENT",
-    "DECISION",
-    "UNKNOWN",
-  ];
-  const missing = sections
-    .filter((section) => !context.includes(section))
-    .map((section) => `${section}\nN/A`);
-  return missing.length ? `${context}\n\n${missing.join("\n\n")}` : context;
+  return context.endsWith("\n") ? context : `${context}\n`;
+}
+
+function contextSectionBody(context: string, section: string): string {
+  const headers = [...DEVLOG_CONTEXT_SECTIONS, "UNKNOWN"];
+  const start = context.search(new RegExp(`^${section}\\s*$`, "m"));
+  if (start < 0) return "";
+  const after = context.slice(start + section.length);
+  const next = headers
+    .filter((candidate) => candidate !== section)
+    .map((candidate) => after.search(new RegExp(`^${candidate}\\s*$`, "m")))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+  return (next === undefined ? after : after.slice(0, next)).trim();
+}
+
+function isSubstantive(value: string): boolean {
+  const normalized = value
+    .replace(/^[-*]\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return Boolean(
+    normalized &&
+    !/^(?:n\/?a|none|tbd|todo|placeholder|not provided)$/i.test(normalized) &&
+    normalized.length >= 8
+  );
+}
+
+export function validateSemanticContext(context: string): void {
+  if (typeof context !== "string" || !context.trim())
+    throw new Error("DEVLOG_CONTEXT_REQUIRED");
+  for (const section of DEVLOG_CONTEXT_SECTIONS) {
+    if (!contextSectionBody(context, section))
+      throw new Error(`DEVLOG_CONTEXT_SECTION_MISSING:${section}`);
+    if (!isSubstantive(contextSectionBody(context, section)))
+      throw new Error(`DEVLOG_CONTEXT_SECTION_NOT_SUBSTANTIVE:${section}`);
+  }
 }
 
 async function nextSequence(day: string, root: string): Promise<number> {
@@ -132,6 +169,7 @@ export async function createDevlogHandoff(
     round: options.round,
     taskId: options.taskId,
     handoffHash: options.handoffHash,
+    mode: options.mode ?? "formal",
   };
   try {
     await mkdir(join(options.root, "devlog", day), { recursive: true });
@@ -145,6 +183,7 @@ export async function createDevlogHandoff(
       round: options.round ?? null,
       task_id: options.taskId ?? null,
       handoff_hash: options.handoffHash ?? null,
+      mode: options.mode ?? "formal",
       task_hash: entry.taskHash,
       created_at: new Date().toISOString(),
     });
@@ -164,6 +203,8 @@ export async function createDevlogHandoff(
 
 export async function validateDevlogHandoff(entry: DevlogEntry): Promise<void> {
   await access(entry.contextPath, constants.F_OK);
+  const context = await readFile(entry.contextPath, "utf8");
+  if (entry.mode !== "minimal") validateSemanticContext(context);
   const task = await readFile(entry.agentTaskPath, "utf8");
   const recorded = (await readFile(entry.taskHashPath, "utf8")).trim();
   const actual = sha256(task);
@@ -172,9 +213,11 @@ export async function validateDevlogHandoff(entry: DevlogEntry): Promise<void> {
   try {
     const metadata = JSON.parse(await readFile(entry.metadataPath, "utf8")) as {
       task_hash?: unknown;
+      mode?: unknown;
     };
     if (metadata.task_hash !== actual)
       throw new Error("DEVLOG_METADATA_MISMATCH");
+    if (metadata.mode !== entry.mode) throw new Error("DEVLOG_MODE_MISMATCH");
   } catch (error) {
     if (error instanceof Error && error.message === "DEVLOG_METADATA_MISMATCH")
       throw error;

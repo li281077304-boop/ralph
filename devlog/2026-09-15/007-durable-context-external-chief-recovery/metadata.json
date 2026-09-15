@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "run_id": null,
+  "round": null,
+  "task_id": "durable-context-external-chief-recovery",
+  "handoff_hash": null,
+  "task_hash": "80efb5844f71c9fcb04e15288a167e1d914f089d4b5ffae0671e62a719b853e2",
+  "mode": "formal",
+  "created_at": "2026-09-15T21:30:00+08:00"
+}

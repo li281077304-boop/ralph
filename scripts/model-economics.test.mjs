@@ -57,6 +57,7 @@ test("codex-task explicitly selects Luna by default and Sol only for chief role"
     task: "worker",
     spawnImpl,
     date: "2026-09-15",
+    minimalContext: true,
   });
   await runCodexTask({
     repoRoot: root,
@@ -64,6 +65,7 @@ test("codex-task explicitly selects Luna by default and Sol only for chief role"
     role: "chief",
     spawnImpl,
     date: "2026-09-15",
+    minimalContext: true,
   });
   await runCodexTask({
     repoRoot: root,
@@ -71,6 +73,7 @@ test("codex-task explicitly selects Luna by default and Sol only for chief role"
     model: "custom-model",
     spawnImpl,
     date: "2026-09-15",
+    minimalContext: true,
   });
   assert.equal(calls[0][calls[0].indexOf("--model") + 1], "gpt-5.6-luna");
   assert.equal(calls[1][calls[1].indexOf("--model") + 1], "gpt-5.6-sol");
@@ -95,6 +98,7 @@ test("usage ledger records role/model/provider and token availability", async ()
           usage: { input_tokens: 7, output_tokens: 3 },
         },
       ]),
+    minimalContext: true,
   });
   const summary = await summarizeUsageLedger(root, "run-1");
   assert.equal(summary.invocation_count, 1);

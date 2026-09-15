@@ -6,12 +6,17 @@ import { fileURLToPath } from "node:url";
 import {
   acquireActiveWriterLock,
   applyChiefRecoveryDecision,
+  buildRecentDevlogContext,
+  createDevlogHandoff,
   getChiefRunDir,
   parseChiefRecoveryDecision,
   prepareChiefRecovery,
   releaseActiveWriterLock,
   RECOVERY_OPEN_MARKER,
   RECOVERY_CLOSE_MARKER,
+  validateDevlogHandoff,
+  writeDevlogDecision,
+  writeDevlogResult,
 } from "@daonhan/ralph-core";
 import { createV3CodexChiefTransport } from "./ralph-chief-v3-codex.js";
 import { extractMarkedJsonBlock } from "./ralph-gui-bridge.js";
@@ -38,6 +43,7 @@ export function chiefRecoveryPrompt(preparation) {
 
 export async function runV3RecoveryTransport(options) {
   const projectRoot = resolve(options.projectRoot);
+  const devlogRoot = options.devlogRoot ?? projectRoot;
   const statePath = runStatePath(projectRoot, options.runId);
   const lock = await acquireActiveWriterLock(projectRoot, {
     run_id: options.runId,
@@ -59,14 +65,67 @@ export async function runV3RecoveryTransport(options) {
           logName: "codex-chief-recovery.ndjson",
           timeout_seconds: options.timeout_seconds,
         })(request));
-    const response = await transport({
+    const request = {
       identity: preparation.workerBlockHash,
       message: chiefRecoveryPrompt(preparation),
       closingMarker: RECOVERY_CLOSE_MARKER,
       runId: options.runId,
       round: preparation.runState.round,
       handoffHash: preparation.workerBlockHash,
+    };
+    const devlogEntry = await createDevlogHandoff({
+      root: devlogRoot,
+      slug: `chief-recovery-round-${preparation.runState.round}`,
+      runId: options.runId,
+      round: preparation.runState.round,
+      taskId: preparation.runState.current_task_id ?? undefined,
+      handoffHash: preparation.workerBlockHash,
+      context: [
+        "USER OBSERVATION",
+        "The current Worker attempt reported a technical block requiring independent recovery planning.",
+        "CONFIRMED FACT",
+        `run_id: ${options.runId}`,
+        `round: ${preparation.runState.round}`,
+        `task_id: ${preparation.runState.current_task_id ?? "none"}`,
+        "TECHNICAL ASSESSMENT",
+        "Recovery must preserve the blocked evidence and choose a new executable technical route.",
+        "REJECTED ASSUMPTIONS",
+        "A technical block is not evidence that a user business decision is required.",
+        "DECISION",
+        "Chief Recovery receives a durable handoff before every invocation.",
+        "UNKNOWN / OPEN RISKS",
+        await buildRecentDevlogContext(devlogRoot),
+      ].join("\n"),
+      agentTask: request.message,
     });
+    await validateDevlogHandoff(devlogEntry);
+    let response;
+    try {
+      response = await transport(request);
+    } catch (error) {
+      await writeDevlogResult(
+        devlogEntry,
+        [
+          "TESTED",
+          `result: ${error instanceof Error ? error.message : String(error)}`,
+          "chief_route: CHIEF_RECOVERY",
+          `run_id: ${options.runId}`,
+          `round: ${preparation.runState.round}`,
+          "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+        ].join("\n")
+      );
+      throw error;
+    }
+    await writeDevlogResult(
+      devlogEntry,
+      [
+        "TESTED",
+        "chief_route: CHIEF_RECOVERY",
+        `run_id: ${options.runId}`,
+        `round: ${preparation.runState.round}`,
+        "REAL-UAT-VERIFIED: NOT-YET-VERIFIED",
+      ].join("\n")
+    );
     if (!response || typeof response.reply !== "string")
       throw new Error("Chief Recovery transport returned no reply");
     const decision = parseChiefRecoveryDecision(
@@ -76,12 +135,22 @@ export async function runV3RecoveryTransport(options) {
         RECOVERY_CLOSE_MARKER
       )
     );
+    const applied = await applyChiefRecoveryDecision(
+      projectRoot,
+      options.runId,
+      decision
+    );
+    await writeDevlogDecision(
+      devlogEntry,
+      [
+        "CONFIRMED CONCLUSION",
+        `action: ${decision.action}`,
+        `run_id: ${options.runId}`,
+        `round: ${preparation.runState.round}`,
+      ].join("\n")
+    );
     return {
-      ...(await applyChiefRecoveryDecision(
-        projectRoot,
-        options.runId,
-        decision
-      )),
+      ...applied,
       recovered: false,
     };
   } finally {

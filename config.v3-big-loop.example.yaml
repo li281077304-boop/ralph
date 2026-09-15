@@ -19,7 +19,8 @@ worker:
 # external transport is injected; the V3 router then falls back to Host Sol.
 gui_bridge:
   enabled: true
-  conversation_url: https://chatgpt.com/c/REPLACE_WITH_FIXED_CONVERSATION_ID
+  # Optional: an existing resolved conversation is reused when available;
+  # omit this to let the bridge acquire a ChatGPT tab autonomously.
   session: playwright-cli
   extension_env_file: ~/.config/playwright-mcp/env
   timeout_ms: 180000

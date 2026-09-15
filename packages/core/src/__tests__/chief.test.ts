@@ -234,6 +234,17 @@ describe("Chief machine gate and Git Guard", () => {
       expect.arrayContaining(["real_data/", "*.xlsx", "*.xls"])
     );
   });
+
+  it("allows external bridge to acquire a conversation without a fixed URL", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ralph-chief-auto-config-"));
+    const path = join(workspace, "ACCEPTANCE.yaml");
+    await writeFile(
+      path,
+      ["chief_mode: external", "gui_bridge:", "  enabled: true"].join("\n")
+    );
+    expect(loadChiefConfig(path).gui_bridge).toMatchObject({ enabled: true });
+    expect(loadChiefConfig(path).gui_bridge?.conversation_url).toBeUndefined();
+  });
 });
 
 describe("stage safety defaults", () => {

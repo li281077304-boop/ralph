@@ -20,7 +20,10 @@ import { runV3SelectTransport } from "./ralph-chief-v3-select.js";
 import { runV3ReviewTransport } from "./ralph-chief-v3-review.js";
 import { createV3CodexChiefTransport } from "./ralph-chief-v3-codex.js";
 import { runV3RecoveryTransport } from "./ralph-chief-v3-recovery.js";
-import { runExternalChiefGuiRoundtrip } from "./ralph-gui-chief-bridge.js";
+import {
+  externalChiefPreflight,
+  runExternalChiefGuiRoundtrip,
+} from "./ralph-gui-chief-bridge.js";
 
 function runStatePath(projectRoot, runId) {
   return join(getChiefRunDir(projectRoot, runId), "RUN_STATE.json");
@@ -201,6 +204,18 @@ export async function runV3BigLoop(options) {
       });
       return hostRun();
     }
+    const preflight = externalChiefPreflight(config.gui_bridge);
+    if (!preflight.ok) {
+      await recordChiefRouteTelemetry(projectRoot, runId, {
+        chief_provider: "host_codex_fallback",
+        [`${route}_external_preflight_failures`]: 1,
+        [`${route}_external_not_configured`]:
+          preflight.code === "EXTERNAL_NOT_CONFIGURED",
+        [`${route}_fallback_reason`]: preflight.code,
+        [`${route}_host_sol_fallbacks`]: 1,
+      });
+      return hostRun();
+    }
     await recordChiefRouteTelemetry(projectRoot, runId, {
       chief_provider: "external",
       [`${route}_external_attempted`]: true,
@@ -269,7 +284,7 @@ export async function runV3BigLoop(options) {
           runV3SelectTransport({
             projectRoot,
             runId,
-            devlogRoot: options.devlogRoot,
+            devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             transport: externalTransport,
           }),
@@ -277,7 +292,7 @@ export async function runV3BigLoop(options) {
           runV3SelectTransport({
             projectRoot,
             runId,
-            devlogRoot: options.devlogRoot,
+            devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             transport: codexTransport(
               "codex-chief-select.ndjson",
@@ -289,7 +304,7 @@ export async function runV3BigLoop(options) {
       runV3WorkSlice({
         projectRoot,
         runId,
-        devlogRoot: options.devlogRoot,
+        devlogRoot: options.devlogRoot ?? projectRoot,
         config: workConfig(config, runId),
       }),
     review: () =>
@@ -299,7 +314,7 @@ export async function runV3BigLoop(options) {
           runV3ReviewTransport({
             projectRoot,
             runId,
-            devlogRoot: options.devlogRoot,
+            devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "chief",
             transport: externalTransport,
@@ -308,7 +323,7 @@ export async function runV3BigLoop(options) {
           runV3ReviewTransport({
             projectRoot,
             runId,
-            devlogRoot: options.devlogRoot,
+            devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "chief",
             transport: codexTransport(
@@ -334,7 +349,7 @@ export async function runV3BigLoop(options) {
           runV3ReviewTransport({
             projectRoot,
             runId,
-            devlogRoot: options.devlogRoot,
+            devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "final",
             transport: externalTransport,
@@ -343,7 +358,7 @@ export async function runV3BigLoop(options) {
           runV3ReviewTransport({
             projectRoot,
             runId,
-            devlogRoot: options.devlogRoot,
+            devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "final",
             transport: codexTransport(

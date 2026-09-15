@@ -250,6 +250,7 @@ export {
 export {
   buildRecentDevlogContext,
   createDevlogHandoff,
+  validateSemanticContext,
   validateDevlogHandoff,
   writeDevlogDecision,
   writeDevlogResult,
