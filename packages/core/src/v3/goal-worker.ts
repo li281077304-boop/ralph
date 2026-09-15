@@ -819,10 +819,11 @@ export async function runNativeGoalWorker(options: {
   }
 
   let devlogEntry: DevlogEntry | undefined;
-  if (options.devlogRoot) {
-    const recent = await buildRecentDevlogContext(options.devlogRoot);
+  const devlogRoot = options.devlogRoot ?? options.projectRoot;
+  if (devlogRoot) {
+    const recent = await buildRecentDevlogContext(devlogRoot);
     devlogEntry = await createDevlogHandoff({
-      root: options.devlogRoot,
+      root: devlogRoot,
       slug: `worker-${options.taskId}-round-${options.round}`,
       runId: options.runId,
       round: options.round,

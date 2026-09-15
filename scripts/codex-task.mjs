@@ -14,13 +14,14 @@ import {
 export async function runCodexTask(options) {
   const root = resolve(options.repoRoot);
   const agentTask = options.task ?? (await readFile(options.taskFile, "utf8"));
-  const devlogRoot = resolve(options.devlogRoot ?? process.cwd());
+  const devlogRoot = resolve(options.devlogRoot ?? root);
   const entry = await createDevlogHandoff({
     root: devlogRoot,
     slug: options.slug ?? "codex-task",
     runId: options.runId,
     round: options.round,
     taskId: options.taskId,
+    date: options.date,
     context:
       options.context ??
       [
@@ -33,15 +34,13 @@ export async function runCodexTask(options) {
   });
   await validateDevlogHandoff(entry);
   const binary = options.binary ?? process.env.RALPH_CODEX_BIN ?? "codex";
-  const args = [
-    "exec",
-    "--json",
-    "--ephemeral",
-    "--dangerously-bypass-approvals-and-sandbox",
-    "-C",
-    root,
-    agentTask,
-  ];
+  const policy = options.executionPolicy ?? {};
+  const args = [];
+  if (policy.approvalMode) args.push("--ask-for-approval", policy.approvalMode);
+  if (policy.sandbox) args.push("--sandbox", policy.sandbox);
+  if (policy.bypassApprovalsAndSandbox === true)
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  args.push("exec", "--json", "--ephemeral", "-C", root, agentTask);
   const spawnImpl = options.spawnImpl ?? spawn;
   const child = spawnImpl(binary, args, {
     cwd: root,
@@ -85,6 +84,7 @@ function parseArgs(argv) {
         "--run-id",
         "--round",
         "--task-id",
+        "--devlog-root",
       ].includes(arg)
     )
       throw new Error(`Unknown argument: ${arg}`);
@@ -109,7 +109,7 @@ export async function main(argv = process.argv.slice(2)) {
     runId: args.run_id,
     round: args.round ? Number(args.round) : undefined,
     taskId: args.task_id,
-    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? process.cwd(),
+    devlogRoot: args.devlog_root,
   });
   process.stdout.write(result.stdout);
   return 0;

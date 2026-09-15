@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "run_id": "devlog-hardening-smoke",
+  "round": 1,
+  "task_id": "smoke",
+  "handoff_hash": null,
+  "task_hash": "1f7db061a91f77bb1e0bc4ba829632569f488994b076b6bcf27bcef1128123bb",
+  "created_at": "2026-09-15T10:16:31.475Z"
+}

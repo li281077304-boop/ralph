@@ -149,7 +149,7 @@ export async function createDevlogHandoff(
       created_at: new Date().toISOString(),
     });
     await validateDevlogHandoff(entry);
-    const relative = directory.slice(options.root.length + 1);
+    const relative = directory.slice(join(options.root, "devlog").length + 1);
     await appendIndex(
       options.root,
       `- ${relative} — ${options.runId ?? "unbound"}/${options.round ?? "-"}/${options.taskId ?? "-"}${options.handoffHash ? `/${options.handoffHash}` : ""}`
@@ -200,17 +200,57 @@ export async function writeDevlogDecision(
 
 export async function buildRecentDevlogContext(
   root: string,
-  limit = 3
+  options: number | { limit?: number; maxChars?: number } = {}
 ): Promise<string> {
+  const limit =
+    typeof options === "number" ? options : Math.max(0, options.limit ?? 3);
+  const maxChars =
+    typeof options === "number"
+      ? 12_000
+      : Math.max(512, options.maxChars ?? 12_000);
   try {
     const index = await readFile(join(root, "devlog", "INDEX.md"), "utf8");
     const lines = index
       .split("\n")
       .filter((line) => line.startsWith("- "))
       .slice(-Math.max(0, limit));
-    return lines.length
-      ? `Recent devlog entries (read from disk):\n${lines.join("\n")}`
-      : "Recent devlog entries: none";
+    if (!lines.length) return "Recent devlog entries: none";
+    const entries = [];
+    for (const line of lines) {
+      let relative = line.slice(2).split(" — ", 1)[0].trim();
+      if (relative.startsWith("devlog/")) relative = relative.slice(7);
+      if (!relative) continue;
+      const directory = join(root, "devlog", relative);
+      let context = "";
+      let decision = "";
+      let result = "";
+      try {
+        context = await readFile(join(directory, "context.md"), "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      try {
+        decision = await readFile(join(directory, "decision.md"), "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      try {
+        result = await readFile(join(directory, "result.md"), "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      entries.push(`${line}\n${context}\n${decision}\n${result}`.trim());
+    }
+    const header = "Recent devlog context (read from disk):\n";
+    let output = header;
+    for (const entry of entries) {
+      const separator = output === header ? "" : "\n\n";
+      const remaining = maxChars - output.length - separator.length;
+      if (remaining <= 0) break;
+      output += `${separator}${entry.slice(0, remaining)}`;
+      if (entry.length > remaining) break;
+    }
+    return output;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
       return "Recent devlog entries: none";

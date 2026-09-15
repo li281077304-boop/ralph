@@ -371,7 +371,13 @@ function checkpointRemoteUrl(root: string, remote: string): string {
 }
 function clean(root: string): boolean {
   return (
-    git(root, ["status", "--porcelain=v1", "--untracked-files=all"]) === ""
+    git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
+      .split("\n")
+      .filter((line) => {
+        const path = line.slice(3).trim().replaceAll("\\", "/");
+        return path !== "devlog" && !path.startsWith("devlog/");
+      })
+      .join("\n") === ""
   );
 }
 function remoteHead(root: string, remote: string, branch: string): string {

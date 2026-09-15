@@ -184,6 +184,7 @@ async function persistTransportEvidence(
 
 export async function runV3ReviewTransport(options) {
   const projectRoot = resolve(options.projectRoot);
+  const devlogRoot = options.devlogRoot ?? projectRoot;
   const runId = options.runId;
   const statePath = runStatePath(projectRoot, runId);
   const lock = await acquireActiveWriterLock(projectRoot, {
@@ -236,9 +237,9 @@ export async function runV3ReviewTransport(options) {
       handoffHash: preparation.handoff.handoff_hash,
     };
     let devlogEntry;
-    if (options.devlogRoot) {
+    if (devlogRoot) {
       devlogEntry = await createDevlogHandoff({
-        root: options.devlogRoot,
+        root: devlogRoot,
         slug: `chief-${runState.phase.toLowerCase()}-round-${runState.round}`,
         runId,
         round: runState.round,
@@ -252,7 +253,7 @@ export async function runV3ReviewTransport(options) {
           "DECISION",
           "Chief review must receive a durable handoff before invocation.",
           "UNKNOWN",
-          await buildRecentDevlogContext(options.devlogRoot),
+          await buildRecentDevlogContext(devlogRoot),
         ].join("\n"),
         agentTask: transportRequest.message,
       });
@@ -363,7 +364,7 @@ export async function main(argv = process.argv.slice(2)) {
   const result = await runV3ReviewTransport({
     projectRoot: args.repo,
     runId: args.run_id,
-    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? process.cwd(),
+    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? args.repo,
     guiConfig: config.gui_bridge,
   });
   process.stdout.write(

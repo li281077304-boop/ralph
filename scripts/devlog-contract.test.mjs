@@ -46,7 +46,76 @@ test("devlog handoff is durable and hash-bound before invocation", async () => {
   await writeDevlogDecision(entry, "CONFIRMED\nopen risk\n");
   assert.equal(await readFile(entry.agentTaskPath, "utf8"), task);
   assert.equal((await stat(entry.resultPath)).isFile(), true);
-  assert.match(await buildRecentDevlogContext(root), /2026-09-15/);
+  const recent = await buildRecentDevlogContext(root);
+  assert.match(recent, /2026-09-15/);
+  assert.match(recent, /USER OBSERVATION/);
+  assert.match(recent, /not a confirmed fact/);
+});
+
+test("default devlog root follows repo, not the launching cwd", async () => {
+  const repoRoot = await mkdtemp(join(tmpdir(), "ralph-codex-repo-"));
+  const outside = await mkdtemp(join(tmpdir(), "ralph-codex-cwd-"));
+  let observedArgs;
+  const spawnImpl = (_binary, args) => {
+    observedArgs = args;
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => child.emit("exit", 0, null));
+    return child;
+  };
+  const previous = process.cwd();
+  process.chdir(outside);
+  try {
+    const result = await runCodexTask({
+      repoRoot,
+      task: "read-only repo smoke",
+      spawnImpl,
+      date: "2026-09-15",
+    });
+    assert.equal(result.entry.root, repoRoot);
+    assert.equal(existsSync(join(repoRoot, "devlog")), true);
+    assert.equal(existsSync(join(outside, "devlog")), false);
+    assert.equal(observedArgs.at(-1), "read-only repo smoke");
+  } finally {
+    process.chdir(previous);
+  }
+});
+
+test("devlog does not elevate Codex permissions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ralph-codex-policy-"));
+  let observedArgs;
+  const spawnImpl = (_binary, args) => {
+    observedArgs = args;
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => child.emit("exit", 0, null));
+    return child;
+  };
+  await runCodexTask({
+    repoRoot: root,
+    task: "policy smoke",
+    spawnImpl,
+  });
+  assert.equal(
+    observedArgs.includes("--dangerously-bypass-approvals-and-sandbox"),
+    false
+  );
+  assert.equal(observedArgs.includes("--ask-for-approval"), false);
+  assert.equal(observedArgs.includes("--sandbox"), false);
+});
+
+test("fresh context reads historical conclusions with a deterministic bound", async () => {
+  const root = process.cwd();
+  const recent = await buildRecentDevlogContext(root, {
+    limit: 2,
+    maxChars: 16_000,
+  });
+  assert.match(recent, /status=active/);
+  assert.match(recent, /file picker/);
+  assert.match(recent, /真实 Payroll UAT 尚未重新运行/);
+  assert.ok(recent.length <= 16_000);
 });
 
 test("devlog write failure prevents direct Codex invocation", async () => {

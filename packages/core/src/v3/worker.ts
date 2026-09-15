@@ -150,11 +150,14 @@ export async function resumeTechnicalBlockedWorker(options: {
       worker: { agent: "codex" },
     })
   ).snapshot();
-  if (recoveredSnapshot.status !== "") {
+  if (cleanStatus(root) !== "") {
     const changedPaths = recoveredSnapshot.status
       .split("\n")
       .map((line) => line.slice(3).trim())
-      .filter(Boolean)
+      .filter(
+        (path) =>
+          Boolean(path) && path !== "devlog" && !path.startsWith("devlog/")
+      )
       .sort();
     await writeJsonAtomic(
       artifact(root, options.runId, state.round, "worker_evidence.json"),
@@ -259,7 +262,13 @@ function failState(state: RunState, reason: string): RunState {
 }
 
 function cleanStatus(root: string): string {
-  return maybeGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  return maybeGit(root, ["status", "--porcelain=v1", "--untracked-files=all"])
+    .split("\n")
+    .filter((line) => {
+      const path = line.slice(3).trim().replaceAll("\\", "/");
+      return path !== "devlog" && !path.startsWith("devlog/");
+    })
+    .join("\n");
 }
 
 function branch(root: string): string {

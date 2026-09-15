@@ -359,7 +359,7 @@ export async function main(argv = process.argv.slice(2)) {
     projectRoot: args.repo,
     runId: args.run_id,
     config,
-    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? process.cwd(),
+    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? args.repo,
     onProgress: ({ round, message }) => {
       if (message) process.stdout.write(`[第 ${round} 轮] ${message}\n`);
     },

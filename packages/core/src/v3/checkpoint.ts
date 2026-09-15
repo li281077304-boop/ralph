@@ -102,7 +102,13 @@ function treeSha(root: string, ref: string): string {
 }
 function cleanWorktree(root: string): boolean {
   return (
-    maybeGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]) === ""
+    maybeGit(root, ["status", "--porcelain=v1", "--untracked-files=all"])
+      .split("\n")
+      .filter((line) => {
+        const path = line.slice(3).trim().replaceAll("\\", "/");
+        return path !== "devlog" && !path.startsWith("devlog/");
+      })
+      .join("\n") === ""
   );
 }
 async function expectedTreeSha(root: string, baseSha: string): Promise<string> {

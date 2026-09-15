@@ -125,6 +125,7 @@ async function recoverAcceptedDecision(projectRoot, runId) {
  */
 export async function runV3SelectTransport(options) {
   const projectRoot = resolve(options.projectRoot);
+  const devlogRoot = options.devlogRoot ?? projectRoot;
   const runId = options.runId;
   const runStatePathValue = runStatePath(projectRoot, runId);
   const lock = await acquireActiveWriterLock(projectRoot, {
@@ -159,9 +160,9 @@ export async function runV3SelectTransport(options) {
       options.transport ??
       ((value) => runExternalChiefGuiRoundtrip(options.guiConfig, value));
     let devlogEntry;
-    if (options.devlogRoot) {
+    if (devlogRoot) {
       devlogEntry = await createDevlogHandoff({
-        root: options.devlogRoot,
+        root: devlogRoot,
         slug: `chief-select-round-${runState.round}`,
         runId,
         round: runState.round,
@@ -174,7 +175,7 @@ export async function runV3SelectTransport(options) {
           "DECISION",
           "Chief SELECT must receive a durable handoff before invocation.",
           "UNKNOWN",
-          await buildRecentDevlogContext(options.devlogRoot),
+          await buildRecentDevlogContext(devlogRoot),
         ].join("\n"),
         agentTask: request.message,
       });
@@ -261,7 +262,7 @@ export async function main(argv = process.argv.slice(2)) {
   const result = await runV3SelectTransport({
     projectRoot: args.repo,
     runId: args.run_id,
-    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? process.cwd(),
+    devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? args.repo,
     guiConfig: config.gui_bridge,
   });
   process.stdout.write(

@@ -176,10 +176,9 @@ function snapshotFiles(root: string): {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) visit(path);
       else if (entry.isFile() || entry.isSymbolicLink()) {
-        untrackedFiles.set(
-          relative(root, path).replaceAll("\\", "/"),
-          hash(path)
-        );
+        const relativePath = relative(root, path).replaceAll("\\", "/");
+        if (isControllerOwnedPath(relativePath)) continue;
+        untrackedFiles.set(relativePath, hash(path));
       }
     }
   };
@@ -194,8 +193,13 @@ function addListedFiles(
 ): void {
   for (const path of paths) {
     const normalized = path.replaceAll("\\", "/");
+    if (isControllerOwnedPath(normalized)) continue;
     target.set(normalized, hash(join(root, normalized)));
   }
+}
+
+function isControllerOwnedPath(path: string): boolean {
+  return path === "devlog" || path.startsWith("devlog/");
 }
 
 function gitPaths(cwd: string, args: string[]): string[] {
@@ -241,7 +245,8 @@ export function workspaceFingerprint(
   for (const [path, value] of [...snapshot.untrackedFiles].sort((a, b) =>
     a[0].localeCompare(b[0])
   )) {
-    if (!excludedUntrackedPaths.includes(path)) untrackedFiles[path] = value;
+    if (!excludedUntrackedPaths.includes(path) && !isControllerOwnedPath(path))
+      untrackedFiles[path] = value;
   }
   return {
     head: snapshot.head,
