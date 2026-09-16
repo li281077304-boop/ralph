@@ -41,6 +41,12 @@ function selectDecisionPath(projectRoot, runId, round) {
   );
 }
 
+function isRepairableSelectProtocolError(error) {
+  return /next_worker_task must be an object/.test(
+    error instanceof Error ? error.message : String(error)
+  );
+}
+
 async function exists(path) {
   try {
     await access(path, constants.F_OK);
@@ -227,12 +233,39 @@ export async function runV3SelectTransport(options) {
       );
     if (!result || typeof result.reply !== "string")
       throw new Error("Chief transport returned no reply");
-    const rawDecision = extractMarkedJsonBlock(
-      result.reply,
-      SELECT_OPEN_MARKER,
-      SELECT_CLOSE_MARKER
-    );
-    const decision = parseChiefSelectDecision(rawDecision);
+    let decision;
+    try {
+      const rawDecision = extractMarkedJsonBlock(
+        result.reply,
+        SELECT_OPEN_MARKER,
+        SELECT_CLOSE_MARKER
+      );
+      decision = parseChiefSelectDecision(rawDecision);
+    } catch (error) {
+      if (!isRepairableSelectProtocolError(error)) throw error;
+      const repairRequest = {
+        ...request,
+        identity: `${request.identity}-schema-repair`,
+        message: `${request.message}\n\n协议修正：next_worker_task 必须是对象（包含 objective、technical_direction、avoid_previous_routes、acceptance、evidence_to_check），不能是 task id 字符串。请仅重新输出同一绑定的完整机器区块。`,
+      };
+      result = await transport(repairRequest);
+      if (!result || typeof result.reply !== "string")
+        throw new Error("Chief transport returned no reply");
+      const repairedRawDecision = extractMarkedJsonBlock(
+        result.reply,
+        SELECT_OPEN_MARKER,
+        SELECT_CLOSE_MARKER
+      );
+      try {
+        decision = parseChiefSelectDecision(repairedRawDecision);
+      } catch (repairError) {
+        const protocolError = new Error(
+          `CHIEF_PROTOCOL_INVALID: ${repairError instanceof Error ? repairError.message : String(repairError)}`
+        );
+        protocolError.code = "CHIEF_PROTOCOL_INVALID";
+        throw protocolError;
+      }
+    }
     const applied = await applySelectDecision(projectRoot, runId, decision);
     if (devlogEntry)
       await writeDevlogDecision(

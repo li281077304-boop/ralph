@@ -53,6 +53,13 @@ export async function routeChiefCall(options) {
         route.external_recovery.code =
           recovered?.code ?? "EXTERNAL_RECOVERY_FAILED";
       }
+    } else {
+      throw Object.assign(
+        new Error(
+          "CHIEF_ROUTER_RECOVERY_REQUIRED: Warm External failure cannot bypass recovery"
+        ),
+        { code: "CHIEF_ROUTER_RECOVERY_REQUIRED" }
+      );
     }
     if (route.selected_route !== "EXTERNAL_RECOVERY") {
       route.selected_route = "HOST_CHIEF";
@@ -75,6 +82,51 @@ export async function routeChiefCall(options) {
     route.failure_code = error?.code ?? "EXTERNAL_CHIEF_FAILURE";
     route.host_fallback_reason =
       error instanceof Error ? error.message : String(error);
+    if (options.recover) {
+      route.external_recovery.attempted = true;
+      let recovered;
+      try {
+        recovered = await options.recover(error, { transportFailure: true });
+      } catch (recoveryError) {
+        recovered = {
+          ok: false,
+          code: recoveryError?.code ?? "EXTERNAL_RECOVERY_FAILED",
+          message:
+            recoveryError instanceof Error
+              ? recoveryError.message
+              : String(recoveryError),
+        };
+      }
+      route.external_recovery.success = recovered?.ok === true;
+      if (route.external_recovery.success) {
+        route.selected_route = "EXTERNAL_RECOVERY";
+        try {
+          const result = await options.external({
+            route,
+            recovery: true,
+          });
+          route.final_chief_identity = "external";
+          await persist({ result: "EXTERNAL_RECOVERY_SUCCESS" });
+          return result;
+        } catch (retryError) {
+          route.failure_code = retryError?.code ?? "EXTERNAL_CHIEF_FAILURE";
+          route.host_fallback_reason =
+            retryError instanceof Error
+              ? retryError.message
+              : String(retryError);
+        }
+      } else {
+        route.external_recovery.code =
+          recovered?.code ?? "EXTERNAL_RECOVERY_FAILED";
+      }
+    } else {
+      throw Object.assign(
+        new Error(
+          "CHIEF_ROUTER_RECOVERY_REQUIRED: External transport failure cannot bypass recovery"
+        ),
+        { code: "CHIEF_ROUTER_RECOVERY_REQUIRED" }
+      );
+    }
     route.selected_route = "HOST_CHIEF";
     route.final_chief_identity = "host";
     const result = await options.host(error);

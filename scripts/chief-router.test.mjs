@@ -76,3 +76,71 @@ test("preflight exception is classified as Warm failure and can recover", async 
   assert.equal(records[0].external_warm.code, "ATTACH_FAILED");
   assert.equal(records[0].external_recovery.success, true);
 });
+
+test("recoverable External transport failure must recover before Host", async () => {
+  let externalCalls = 0;
+  let recovery = 0;
+  let host = 0;
+  const records = [];
+  const result = await routeChiefCall({
+    warmPreflight: async () => ({ ok: true }),
+    recover: async () => {
+      recovery += 1;
+      return { ok: true };
+    },
+    external: async () => {
+      externalCalls += 1;
+      if (externalCalls === 1)
+        throw Object.assign(new Error("INPUT_NOT_FOUND"), {
+          code: "INPUT_NOT_FOUND",
+        });
+      return { reply: "RECOVERED" };
+    },
+    host: async () => {
+      host += 1;
+      return { reply: "HOST" };
+    },
+    record: async (record) => records.push(record),
+  });
+  assert.equal(result.reply, "RECOVERED");
+  assert.equal(externalCalls, 2);
+  assert.equal(recovery, 1);
+  assert.equal(host, 0);
+  assert.equal(records[0].selected_route, "EXTERNAL_RECOVERY");
+  assert.equal(records[0].external_recovery.success, true);
+});
+
+test("Warm failure without a recovery route fails the routing invariant", async () => {
+  await assert.rejects(
+    routeChiefCall({
+      warmPreflight: async () => ({ ok: false, code: "INPUT_NOT_FOUND" }),
+      external: async () => ({ reply: "UNEXPECTED" }),
+      host: async () => ({ reply: "HOST" }),
+    }),
+    (error) => error.code === "CHIEF_ROUTER_RECOVERY_REQUIRED"
+  );
+});
+
+test("External transport failure with exhausted recovery permits Host fallback", async () => {
+  let host = 0;
+  const records = [];
+  const result = await routeChiefCall({
+    warmPreflight: async () => ({ ok: true }),
+    recover: async () => ({ ok: false, code: "RECOVERY_EXHAUSTED" }),
+    external: async () => {
+      throw Object.assign(new Error("CONVERSATION_NOT_FOUND"), {
+        code: "CONVERSATION_NOT_FOUND",
+      });
+    },
+    host: async () => {
+      host += 1;
+      return { reply: "HOST" };
+    },
+    record: async (record) => records.push(record),
+  });
+  assert.equal(result.reply, "HOST");
+  assert.equal(host, 1);
+  assert.equal(records[0].external_recovery.attempted, true);
+  assert.equal(records[0].external_recovery.success, false);
+  assert.equal(records[0].selected_route, "HOST_CHIEF");
+});

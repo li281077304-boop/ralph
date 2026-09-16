@@ -137,6 +137,51 @@ test("V3 SELECT sends a dedicated prompt and transitions READY task to WORKER", 
   );
 });
 
+test("invalid next_worker_task gets one bounded schema correction request", async () => {
+  const fixture = await seed();
+  const calls = [];
+  const transport = async (request) => {
+    calls.push(request);
+    const decision = decisionFromPrompt(request.message, {
+      next_worker_task: calls.length === 1 ? "smoke-next-task" : undefined,
+    });
+    return {
+      reply: `${SELECT_OPEN_MARKER}\n${JSON.stringify(decision)}\n${SELECT_CLOSE_MARKER}`,
+    };
+  };
+  const result = await runV3SelectTransport({
+    projectRoot: fixture.root,
+    runId: fixture.runId,
+    transport,
+  });
+  assert.equal(result.runState.phase, "WORKER");
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].message, /next_worker_task 必须是对象/);
+  assert.match(calls[1].identity, /schema-repair$/);
+});
+
+test("repeated invalid next_worker_task fails closed after one repair", async () => {
+  const fixture = await seed();
+  let calls = 0;
+  await assert.rejects(
+    runV3SelectTransport({
+      projectRoot: fixture.root,
+      runId: fixture.runId,
+      transport: async ({ message }) => {
+        calls += 1;
+        const decision = decisionFromPrompt(message, {
+          next_worker_task: "still-a-string",
+        });
+        return {
+          reply: `${SELECT_OPEN_MARKER}\n${JSON.stringify(decision)}\n${SELECT_CLOSE_MARKER}`,
+        };
+      },
+    }),
+    (error) => error.code === "CHIEF_PROTOCOL_INVALID"
+  );
+  assert.equal(calls, 2);
+});
+
 test("waiting handoff is reused and accepted recovery skips GUI", async () => {
   const fixture = await seed();
   const calls = { count: 0 };
