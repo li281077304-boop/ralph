@@ -7,6 +7,7 @@ Chief transport.
 ## Confirmed from the Payroll checkout and real Desktop inputs
 
 - Isolated Payroll worktree: `/private/tmp/education-payroll-host-chief.h2CabN`
+- Payroll evidence HEAD after the evidence-only commits: `ec1fe201077aa6f41e2aa2a3dd62f63ef875ec49`
 - Original shared Payroll workspace was not modified.
 - Fresh Payroll service Run: `18a38d63ebcd`
 - Period: `2026-08`, `2026-08-03` to `2026-08-30`, source `SOURCE_FILE_RANGE`
