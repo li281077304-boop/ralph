@@ -408,27 +408,37 @@ async function readPreviousReviewDecision(
     artifact(root, run.run_id, run.round - 1, "review_decision.json"),
     artifact(root, run.run_id, run.round - 1, "final_review_decision.json"),
   ];
-  let decision: ReturnType<typeof parseChiefReviewDecision>;
-  let path = paths[0];
-  let raw: string | undefined;
+  const decisions: Array<{
+    path: string;
+    decision: ReturnType<typeof parseChiefReviewDecision>;
+  }> = [];
   for (const candidate of paths) {
     try {
-      raw = await readFile(candidate, "utf8");
-      path = candidate;
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      const raw = await readFile(candidate, "utf8");
+      try {
+        decisions.push({
+          path: candidate,
+          decision: parseChiefReviewDecision(JSON.parse(raw)),
+        });
+      } catch (error) {
         throw new Error(`review decision is malformed: ${candidate}`, {
           cause: error,
         });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  if (raw === undefined) return undefined;
-  try {
-    decision = parseChiefReviewDecision(JSON.parse(raw));
-  } catch (error) {
-    throw new Error(`review decision is malformed: ${path}`, { cause: error });
-  }
+  if (decisions.length === 0) return undefined;
+  // A round may contain both the ordinary Chief Review and a Final Review.
+  // When Final Review patches, the ordinary review is commonly PASS; choose
+  // the PATCH continuation instead of treating that earlier PASS as authority
+  // for a Worker round.
+  const selected = decisions.find(
+    ({ decision }) => decision.action === "PATCH"
+  );
+  const decision = selected?.decision ?? decisions[0].decision;
+  const path = selected?.path ?? decisions[0].path;
   if (decision.action !== "PATCH")
     throw new Error("Previous Review decision is not a PATCH continuation");
   let checkpoint: Record<string, unknown>;

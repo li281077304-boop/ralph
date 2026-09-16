@@ -672,6 +672,76 @@ test("PASS review context cannot authorize a Worker continuation", async () => {
   assert.equal(invoked, 0);
 });
 
+test("Final Review PATCH takes precedence over an earlier PASS when resuming Worker", async () => {
+  const f = await seed(true);
+  const runPath = join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json");
+  const run = JSON.parse(await readFile(runPath, "utf8"));
+  const roundDir = join(getChiefRunDir(f.root, f.runId), "rounds/001");
+  const binding = "a".repeat(64);
+  await writeFile(
+    join(roundDir, "review_decision.json"),
+    JSON.stringify({
+      action: "PASS",
+      run_id: f.runId,
+      round: 1,
+      handoff_hash: binding,
+      project_state_hash: binding,
+      checkpoint_hash: binding,
+      gate_artifact_hash: binding,
+      reviewed_repo: "acme/ralph",
+      reviewed_base_sha: binding,
+      reviewed_head_sha: binding,
+      repo_reviewed: true,
+      findings: [],
+      patch_instructions: [],
+      human_question: "",
+      human_options: [],
+      summary: "pass",
+    }) + "\n"
+  );
+  await writeFile(
+    join(roundDir, "final_review_decision.json"),
+    JSON.stringify({
+      action: "PATCH",
+      run_id: f.runId,
+      round: 1,
+      handoff_hash: binding,
+      project_state_hash: binding,
+      checkpoint_hash: binding,
+      gate_artifact_hash: binding,
+      reviewed_repo: "acme/ralph",
+      reviewed_base_sha: binding,
+      reviewed_head_sha: binding,
+      repo_reviewed: true,
+      findings: [],
+      patch_instructions: ["fix the final review finding"],
+      human_question: "",
+      human_options: [],
+      summary: "patch",
+    }) + "\n"
+  );
+  await saveRunState(runPath, {
+    ...run,
+    phase: "WORKER",
+    status: "running",
+    round: 2,
+    current_task_id: "task-1",
+  });
+  let prompt = "";
+  await runV3WorkSlice({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: config(),
+    runAgent: async (_stage, workerPrompt) => {
+      prompt = workerPrompt;
+      await writeFile(join(f.root, "app.txt"), "patched\n");
+      return { text: "patched", meta: {} };
+    },
+    runGate: async () => ({ passed: true, commands: [] }),
+  });
+  assert.match(prompt, /fix the final review finding/);
+});
+
 test("PATCH continuation rejects a previous checkpoint for another task", async () => {
   const f = await seed(true);
   await runV3ReviewTransport({
