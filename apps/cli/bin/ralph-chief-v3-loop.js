@@ -245,8 +245,25 @@ export async function runV3BigLoop(options) {
       fallbackFrom,
       timeout_seconds: config.timeout_seconds,
     });
-  const hostFallbackFrom =
-    config.chief_mode === "external" ? "external" : undefined;
+  // Production fallback is explicitly Host Sol High.  Keep the direct
+  // `chief_mode: codex` path available only for an explicit debug/compatibility
+  // override, but never let an external-first run inherit an arbitrary host
+  // Chief configuration.
+  const hostSolConfig = {
+    ...config.chief,
+    agent: "codex",
+    model: "gpt-5.6-sol",
+    reasoning_effort: "high",
+  };
+  const hostSolTransport = (logName) =>
+    createV3CodexChiefTransport({
+      projectRoot,
+      runId,
+      chiefConfig: hostSolConfig,
+      logName,
+      fallbackFrom: "external",
+      timeout_seconds: config.timeout_seconds,
+    });
   let externalRound = null;
   const externalTransport = (request) => {
     externalRound = Number.isInteger(request?.round) ? request.round : null;
@@ -296,7 +313,7 @@ export async function runV3BigLoop(options) {
       host: async (error) => {
         const failure = error?.code ?? error?.message ?? null;
         await recordChiefRouteTelemetry(projectRoot, runId, {
-          chief_provider: "host_codex_fallback",
+          chief_provider: "host_sol_high",
           [`${route}_fallback_reason`]: failure,
           [`${route}_host_sol_fallbacks`]: 1,
         });
@@ -361,10 +378,7 @@ export async function runV3BigLoop(options) {
             runId,
             devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
-            transport: codexTransport(
-              "codex-chief-select.ndjson",
-              hostFallbackFrom
-            ),
+            transport: hostSolTransport("codex-chief-select.ndjson"),
           })
       ),
     work: () =>
@@ -393,10 +407,7 @@ export async function runV3BigLoop(options) {
             devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "chief",
-            transport: codexTransport(
-              "codex-chief-review.ndjson",
-              hostFallbackFrom
-            ),
+            transport: hostSolTransport("codex-chief-review.ndjson"),
           })
       ),
     uat: () =>
@@ -428,10 +439,7 @@ export async function runV3BigLoop(options) {
             devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "final",
-            transport: codexTransport(
-              "codex-chief-final-review.ndjson",
-              hostFallbackFrom
-            ),
+            transport: hostSolTransport("codex-chief-final-review.ndjson"),
           })
       ),
     recovery: () =>
@@ -441,7 +449,7 @@ export async function runV3BigLoop(options) {
           runV3RecoveryTransport({
             projectRoot,
             runId,
-            chiefConfig: config.chief,
+            chiefConfig: hostSolConfig,
             timeout_seconds: config.timeout_seconds,
             transport: externalTransport,
           }),
@@ -449,12 +457,9 @@ export async function runV3BigLoop(options) {
           runV3RecoveryTransport({
             projectRoot,
             runId,
-            chiefConfig: config.chief,
+            chiefConfig: hostSolConfig,
             timeout_seconds: config.timeout_seconds,
-            transport: codexTransport(
-              "codex-chief-recovery.ndjson",
-              hostFallbackFrom
-            ),
+            transport: hostSolTransport("codex-chief-recovery.ndjson"),
           })
       ),
   };

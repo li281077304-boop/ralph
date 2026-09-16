@@ -56,6 +56,7 @@ test("recovery failure falls back to Host and records reason", async () => {
   });
   assert.equal(result.reply, "HOST");
   assert.equal(records[0].selected_route, "HOST_CHIEF");
+  assert.equal(records[0].host_route, "HOST_SOL_HIGH");
   assert.equal(records[0].host_fallback_reason, "RECOVERY_EXHAUSTED");
 });
 
@@ -143,6 +144,7 @@ test("External transport failure with exhausted recovery permits Host fallback",
   assert.equal(records[0].external_recovery.attempted, true);
   assert.equal(records[0].external_recovery.success, false);
   assert.equal(records[0].selected_route, "HOST_CHIEF");
+  assert.equal(records[0].host_route, "HOST_SOL_HIGH");
 });
 
 test("Host failure still persists the selected route and failure", async () => {

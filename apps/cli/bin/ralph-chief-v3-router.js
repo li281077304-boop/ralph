@@ -12,6 +12,7 @@ export async function routeChiefCall(options) {
     external_warm: { attempted: false, success: false },
     external_recovery: { attempted: false, success: false },
     host_fallback_reason: null,
+    host_route: null,
     final_chief_identity: null,
     duration: null,
     failure_code: null,
@@ -78,6 +79,7 @@ export async function routeChiefCall(options) {
     }
     if (route.selected_route !== "EXTERNAL_RECOVERY") {
       route.selected_route = "HOST_CHIEF";
+      route.host_route = "HOST_SOL_HIGH";
       route.host_fallback_reason =
         route.external_recovery.code ?? route.external_warm.code;
       route.final_chief_identity = "host";
@@ -141,6 +143,7 @@ export async function routeChiefCall(options) {
       );
     }
     route.selected_route = "HOST_CHIEF";
+    route.host_route = "HOST_SOL_HIGH";
     route.final_chief_identity = "host";
     return invokeHost(error);
   }
