@@ -34,6 +34,7 @@ export {
 } from "./machine-gate.js";
 export {
   GitGuard,
+  isControllerOwnedPath,
   workspaceFingerprint,
   type AcceptanceControls,
   type RepoSnapshot,

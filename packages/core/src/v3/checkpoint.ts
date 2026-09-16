@@ -8,7 +8,11 @@ import { getChiefRunDir, getRoundDir } from "./rounds.js";
 import { loadRunState, saveRunState, type RunState } from "./state.js";
 import { writeJsonAtomic, writeJsonImmutable } from "./atomic-json.js";
 import type { MachineGateResult } from "../machine-gate.js";
-import { GitGuard, workspaceFingerprint } from "../git-guard.js";
+import {
+  GitGuard,
+  isControllerOwnedPath,
+  workspaceFingerprint,
+} from "../git-guard.js";
 import { assertCheckpointGateEvidence } from "./gate-evidence.js";
 
 export type V3CheckpointConfig = {
@@ -79,7 +83,8 @@ function changedPaths(root: string): string[] {
   const tracked = maybeGit(root, ["diff", "--name-only", "HEAD"])
     .split(/\r?\n/)
     .filter(Boolean);
-  for (const path of tracked) result.add(path);
+  for (const path of tracked)
+    if (!isControllerOwnedPath(path)) result.add(path);
   const status = maybeGit(root, [
     "status",
     "--porcelain=v1",
@@ -87,12 +92,21 @@ function changedPaths(root: string): string[] {
   ]);
   for (const line of status.split(/\r?\n/).filter(Boolean)) {
     const value = line.slice(2).trim();
-    if (value && !value.includes(" -> ")) result.add(value);
+    if (value && !value.includes(" -> ") && !isControllerOwnedPath(value))
+      result.add(value);
   }
   return [...result].sort();
 }
 function workingTreeDiffHash(root: string): string {
-  const diff = maybeGit(root, ["diff", "--binary", "HEAD"]);
+  const diff = maybeGit(root, [
+    "diff",
+    "--binary",
+    "HEAD",
+    "--",
+    ".",
+    ":!.ralph/**",
+    ":!devlog/**",
+  ]);
   return hash(`${diff}\n${changedPaths(root).join("\n")}`);
 }
 function committedDiffHash(root: string, base: string, head: string): string {
@@ -107,18 +121,23 @@ function cleanWorktree(root: string): boolean {
       .split("\n")
       .filter((line) => {
         const path = line.slice(2).trim().replaceAll("\\", "/");
-        return path !== "devlog" && !path.startsWith("devlog/");
+        return !isControllerOwnedPath(path);
       })
       .join("\n") === ""
   );
 }
-async function expectedTreeSha(root: string, baseSha: string): Promise<string> {
+async function expectedTreeSha(
+  root: string,
+  baseSha: string,
+  productPaths: string[]
+): Promise<string> {
   const tempDir = await mkdtemp(join(tmpdir(), "ralph-v3-index-"));
   const indexPath = join(tempDir, "index");
   const env = { GIT_INDEX_FILE: indexPath };
   try {
     gitWithEnv(root, ["read-tree", baseSha], env);
-    gitWithEnv(root, ["add", "-A"], env);
+    if (productPaths.length > 0)
+      gitWithEnv(root, ["add", "-A", "--", ...productPaths], env);
     return gitWithEnv(root, ["write-tree"], env);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -264,6 +283,7 @@ export async function runCheckpointPhase(options: {
       throw new Error(
         "current workspace does not match the completed Machine Gate"
       );
+    const productPaths = changedPaths(root);
     intent = {
       version: 1,
       run_id: options.runId,
@@ -281,7 +301,7 @@ export async function runCheckpointPhase(options: {
           : false),
       gated_workspace_fingerprint: gatedWorkspaceFingerprint,
       gate_artifact_hash: gateArtifactHash,
-      expected_tree_sha: await expectedTreeSha(root, baseSha),
+      expected_tree_sha: await expectedTreeSha(root, baseSha, productPaths),
       commit_subject: `ralph(v3): ${taskId} round ${state.round}`,
       created_at: new Date().toISOString(),
     };
@@ -314,7 +334,12 @@ export async function runCheckpointPhase(options: {
       );
     if (workingTreeDiffHash(root) !== String(intent.diff_hash))
       throw new Error("working tree no longer matches the checkpoint intent");
-    git(root, ["add", "-A"]);
+    // Stage only product-owned paths.  Runtime evidence remains durable on
+    // disk but is intentionally never part of a product checkpoint commit.
+    const productPaths = changedPaths(root);
+    git(root, ["reset", "--", "."]);
+    if (productPaths.length > 0)
+      git(root, ["add", "-A", "--", ...productPaths]);
     if (git(root, ["write-tree"]) !== String(intent.expected_tree_sha))
       throw new Error("staged tree does not match the checkpoint intent");
     const paths = changedPaths(root);

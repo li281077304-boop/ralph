@@ -54,7 +54,17 @@ export class GitGuard {
       head: git(this.workspaceDir, ["rev-parse", "HEAD"]) || "-",
       status: git(this.workspaceDir, ["status", "--porcelain=v1"]),
       diffStat: git(this.workspaceDir, ["diff", "--stat", "HEAD"]),
-      diff: git(this.workspaceDir, ["diff", "--binary", "HEAD"]),
+      // Controller evidence under .ralph/ and devlog/ is durable but not a
+      // product mutation, so exclude it from the deterministic fingerprint.
+      diff: git(this.workspaceDir, [
+        "diff",
+        "--binary",
+        "HEAD",
+        "--",
+        ".",
+        ":!.ralph/**",
+        ":!devlog/**",
+      ]),
       trackedFiles: files.trackedFiles,
       untrackedFiles: files.untrackedFiles,
       files: new Map([...files.trackedFiles, ...files.untrackedFiles]),
@@ -198,8 +208,20 @@ function addListedFiles(
   }
 }
 
-function isControllerOwnedPath(path: string): boolean {
-  return path === "devlog" || path.startsWith("devlog/");
+/**
+ * Files written by the Ralph controller are durable evidence, not product
+ * changes.  Keep them out of workspace fingerprints so a running controller
+ * cannot invalidate the Worker's product evidence (and out of checkpoints so
+ * runtime state is never committed to the product branch).
+ */
+export function isControllerOwnedPath(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/");
+  return (
+    normalized === ".ralph" ||
+    normalized.startsWith(".ralph/") ||
+    normalized === "devlog" ||
+    normalized.startsWith("devlog/")
+  );
 }
 
 function gitPaths(cwd: string, args: string[]): string[] {
