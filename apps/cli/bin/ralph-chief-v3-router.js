@@ -20,6 +20,21 @@ export async function routeChiefCall(options) {
     route.duration = Date.now() - startedAt;
     await options.record?.({ ...route, ...extra });
   };
+  const invokeHost = async (hostError) => {
+    try {
+      const result = await options.host(hostError);
+      await persist({ result: "HOST_FALLBACK" });
+      return result;
+    } catch (error) {
+      await persist({
+        result: "HOST_FAILURE",
+        host_failure_code: error?.code ?? "HOST_CHIEF_FAILURE",
+        host_failure_message:
+          error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  };
   let preflight;
   try {
     preflight = await (options.warmPreflight?.() ?? { ok: true });
@@ -66,9 +81,7 @@ export async function routeChiefCall(options) {
       route.host_fallback_reason =
         route.external_recovery.code ?? route.external_warm.code;
       route.final_chief_identity = "host";
-      const result = await options.host();
-      await persist({ result: "HOST_FALLBACK" });
-      return result;
+      return invokeHost();
     }
   } else {
     route.selected_route = "EXTERNAL_WARM";
@@ -129,8 +142,6 @@ export async function routeChiefCall(options) {
     }
     route.selected_route = "HOST_CHIEF";
     route.final_chief_identity = "host";
-    const result = await options.host(error);
-    await persist({ result: "HOST_FALLBACK" });
-    return result;
+    return invokeHost(error);
   }
 }

@@ -144,3 +144,27 @@ test("External transport failure with exhausted recovery permits Host fallback",
   assert.equal(records[0].external_recovery.success, false);
   assert.equal(records[0].selected_route, "HOST_CHIEF");
 });
+
+test("Host failure still persists the selected route and failure", async () => {
+  const records = [];
+  await assert.rejects(
+    routeChiefCall({
+      warmPreflight: async () => ({ ok: true }),
+      recover: async () => ({ ok: false, code: "RECOVERY_EXHAUSTED" }),
+      external: async () => {
+        throw Object.assign(new Error("INPUT_NOT_FOUND"), {
+          code: "INPUT_NOT_FOUND",
+        });
+      },
+      host: async () => {
+        throw Object.assign(new Error("HOST_TIMEOUT"), {
+          code: "HOST_TIMEOUT",
+        });
+      },
+      record: async (record) => records.push(record),
+    }),
+    (error) => error.code === "HOST_TIMEOUT"
+  );
+  assert.equal(records.at(-1).result, "HOST_FAILURE");
+  assert.equal(records.at(-1).host_failure_code, "HOST_TIMEOUT");
+});
