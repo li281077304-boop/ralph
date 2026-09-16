@@ -12,3 +12,4 @@
 - 2026-09-16/011-default-supervisor-dashboard-widget — unbound/-/default-supervisor-dashboard-widget
 - 2026-09-16/012-ralph-core-architecture-gaps — Machine Gate fail-closed, supervisor restart matrix, permanent execution-backend failover (Dashboard run used as accident evidence only)
 - 2026-09-16/013-backend-failover-fail-closed-closeout — P0/P1 frozen as VERIFIED/CLOSED; backend failover re-classified EXPERIMENTAL/NOT WIRED with explicit operator-approval fail-closed semantics
+- 2026-09-16/014-weekly-report-chief-routing-fix — production Chief strategy resolution and Core Vitest baseline comparison
