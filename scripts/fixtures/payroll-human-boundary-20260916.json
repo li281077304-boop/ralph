@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "kind": "ANONYMIZED_PAYROLL_HUMAN_BOUNDARY_FIXTURE",
+  "run_id": "fresh-run-anonymized",
+  "obligations": [
+    { "id": "AF_POLICY", "category": "BUSINESS_DECISION", "scope": "PERIOD" },
+    { "id": "GL_SOURCE", "category": "SOURCE_CONFIRMATION", "scope": "PERIOD" },
+    {
+      "id": "PART_TIME_POLICY",
+      "category": "BUSINESS_DECISION",
+      "scope": "PERIOD"
+    },
+    {
+      "id": "RENEWAL_SOURCE",
+      "category": "SOURCE_CONFIRMATION",
+      "scope": "PERIOD"
+    },
+    {
+      "id": "REFUND_SOURCE",
+      "category": "SOURCE_CONFIRMATION",
+      "scope": "PERIOD"
+    },
+    {
+      "id": "OTHER_AV_SOURCE",
+      "category": "BUSINESS_DECISION",
+      "scope": "PERIOD"
+    }
+  ],
+  "excluded_from_other_av": ["M", "AF", "AK", "AN"]
+}

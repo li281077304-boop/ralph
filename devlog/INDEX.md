@@ -7,3 +7,4 @@
 - 2026-09-15/005-project-bootstrap-real-uat — ralph-v3-project-bootstrap-real-uat/1/project-bootstrap-real-uat
 - 2026-09-15/006-model-economics — model-economics
 - 2026-09-15/007-durable-context-external-chief-recovery — durable context and External Chief recovery; 2026-08 Payroll real-UAT evidence (`payroll-real-uat-20260916.md`)
+- 2026-09-15/008-human-boundary — permanent Human Boundary, minimal escalation, durable responses, and policy scope

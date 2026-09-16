@@ -29,7 +29,7 @@ export function chiefRecoveryPrompt(preparation) {
   return [
     "You are Ralph V3 CHIEF_RECOVERY. Use a fresh read-only Host Codex context.",
     "Technical tests, builds, missing commands, UI/loopback, sandbox, stalls, and disconnects must remain technical and must never become HUMAN_BLOCK.",
-    "Only BUSINESS_DECISION, CREDENTIAL_OR_SECRET, EXTERNAL_AUTHORIZATION, USER_ONLY_INPUT, or IRREVERSIBLE_EXTERNAL_ACTION may use HUMAN_BLOCK.",
+    "Only BUSINESS_DECISION, CREDENTIAL_OR_SECRET, EXTERNAL_AUTHORIZATION, USER_ONLY_INPUT, SOURCE_CONFIRMATION, or IRREVERSIBLE_EXTERNAL_ACTION may use HUMAN_BLOCK.",
     "Do not modify code, Git, RUN_STATE, or evidence. Return exactly one marked JSON block.",
     `run_id: ${preparation.runState.run_id}`,
     `round: ${preparation.runState.round}`,

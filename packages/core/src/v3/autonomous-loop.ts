@@ -1,4 +1,11 @@
 import type { ObligationStatus } from "./obligations.js";
+import { HUMAN_CATEGORIES } from "./human-boundary.js";
+import {
+  compileMinimalHumanRequired,
+  evaluateHumanBoundary,
+  isTechnicalHumanReason,
+  persistHumanRequired,
+} from "./human-boundary.js";
 
 export type AutonomousEvent =
   | { type: "WORK_COMPLETE"; liveness?: string }
@@ -8,6 +15,7 @@ export type AutonomousEvent =
       category: string;
       message: string;
       options?: string[];
+      technical?: boolean;
     }
   | { type: "GATE_PASS" }
   | { type: "GATE_FAIL"; signature?: string };
@@ -72,13 +80,7 @@ export type AutonomousHandlers = {
   ) => Promise<{ status?: string; confirmed?: boolean }>;
 };
 
-const HUMAN_CATEGORIES = new Set([
-  "BUSINESS_DECISION",
-  "CREDENTIAL_OR_SECRET",
-  "EXTERNAL_AUTHORIZATION",
-  "USER_ONLY_INPUT",
-  "IRREVERSIBLE_EXTERNAL_ACTION",
-]);
+const HUMAN_CATEGORY_SET = new Set<string>(HUMAN_CATEGORIES);
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -123,13 +125,6 @@ function protocolFailure(state: AutonomousState, reason: string): void {
   state.failure_reason = reason;
 }
 
-function allPassed(state: AutonomousState): boolean {
-  return (
-    state.obligations.length > 0 &&
-    state.obligations.every((item) => item.status === "PASS")
-  );
-}
-
 function validRecoveryDecision(decision: unknown): decision is {
   action: "RETRY_WORKER" | "RUN_MACHINE_GATE" | "HUMAN_BLOCK";
   summary?: string;
@@ -171,7 +166,8 @@ function validRecoveryDecision(decision: unknown): decision is {
     nonEmpty("summary") &&
     nonEmpty("human_question") &&
     nonEmpty("human_required_reason") &&
-    HUMAN_CATEGORIES.has(String(value.category ?? value.human_category)) &&
+    HUMAN_CATEGORY_SET.has(String(value.category ?? value.human_category)) &&
+    !isTechnicalHumanReason(value.human_required_reason) &&
     (!value.human_options ||
       (Array.isArray(value.human_options) &&
         value.human_options.every((item) => typeof item === "string")))
@@ -263,11 +259,21 @@ export async function runAutonomousObligationLoop(options: {
         state,
         telemetry,
       };
-    if (allPassed(state)) {
+    const boundary = evaluateHumanBoundary(
+      state.obligations.map((item) => item.status)
+    );
+    if (boundary.terminal === "DONE") {
       state.phase = "DONE";
       state.status = "done";
       await saveTransition(state, options.saveState);
       return { status: "DONE", state, telemetry };
+    }
+    if (boundary.terminal === "WAITING_FOR_HUMAN") {
+      state.phase = "WAITING_FOR_HUMAN";
+      state.status = "waiting";
+      state.stop_reason = "no runnable or technical obligations remain";
+      await saveTransition(state, options.saveState);
+      return { status: "WAITING_FOR_HUMAN", state, telemetry };
     }
     const technical = sortObligations(
       state.obligations.filter((item) => item.status === "TECHNICAL_OPEN")
@@ -277,11 +283,11 @@ export async function runAutonomousObligationLoop(options: {
     )[0];
     const item = technical ?? runnable;
     if (!item) {
-      state.phase = "WAITING_FOR_HUMAN";
-      state.status = "waiting";
-      state.stop_reason = "no runnable or technical obligations remain";
+      state.phase = "TECHNICAL_OPEN";
+      state.status = "running";
+      state.stop_reason = "obligation state requires reconciliation";
       await saveTransition(state, options.saveState);
-      return { status: "WAITING_FOR_HUMAN", state, telemetry };
+      return { status: "TECHNICAL_OPEN", state, telemetry };
     }
     options.onProgress?.({
       obligation_id: item.id,
@@ -307,6 +313,22 @@ export async function runAutonomousObligationLoop(options: {
           : undefined,
       });
       if (!validRecoveryDecision(decision)) {
+        const raw = decision as Record<string, unknown>;
+        if (
+          raw.action === "HUMAN_BLOCK" &&
+          isTechnicalHumanReason(raw.human_required_reason)
+        ) {
+          item.failure_signatures = [
+            ...new Set([
+              ...(item.failure_signatures ?? []),
+              `technical:${String(raw.human_required_reason)}`,
+            ]),
+          ];
+          item.attempts = (item.attempts ?? 0) + 1;
+          setStatus(state, item.id, "TECHNICAL_OPEN");
+          await saveTransition(state, options.saveState);
+          return { status: "TECHNICAL_OPEN", state, telemetry };
+        }
         protocolFailure(
           state,
           "malformed or mismatched CHIEF_RECOVERY protocol"
@@ -317,7 +339,7 @@ export async function runAutonomousObligationLoop(options: {
       if (decision.action === "HUMAN_BLOCK") {
         const category = String(decision.human_category ?? decision.category);
         if (
-          !HUMAN_CATEGORIES.has(category) ||
+          !HUMAN_CATEGORY_SET.has(category) ||
           typeof decision.human_question !== "string" ||
           !decision.human_question.trim()
         ) {
@@ -328,22 +350,36 @@ export async function runAutonomousObligationLoop(options: {
           await saveTransition(state, options.saveState);
           return { status: "FAILED", state, telemetry };
         }
+        const compiled = compileMinimalHumanRequired([
+          {
+            id: `human:${state.run_id}:${item.id}`,
+            obligation_id: item.id,
+            category,
+            confirmed_facts: [],
+            blocker_reason: String(decision.human_required_reason ?? ""),
+            question: String(decision.human_question),
+            minimum_answer: String(decision.human_question),
+            options: Array.isArray(decision.human_options)
+              ? decision.human_options
+              : [],
+            evidence_paths: [],
+            resume_action: "Resolve this item to resume the obligation",
+            affected_obligations: [item.id],
+            context: { run_id: state.run_id, round: state.round },
+            scope: "RUN",
+            requires_human_judgment: true,
+          },
+        ]);
+        if (compiled.length !== 1) {
+          protocolFailure(state, "HUMAN_BLOCK candidate was auto-resolvable");
+          await saveTransition(state, options.saveState);
+          return { status: "FAILED", state, telemetry };
+        }
+        await persistHumanRequired(options.projectRoot, state.run_id, compiled);
         setStatus(state, item.id, "HUMAN_BLOCKED");
         state.human_backlog.push({
-          id: `human:${state.run_id}:${item.id}`,
-          obligation_id: item.id,
-          category,
-          question: decision.human_question,
-          reason:
-            typeof decision.human_required_reason === "string"
-              ? decision.human_required_reason
-              : "",
-          options: Array.isArray(decision.human_options)
-            ? decision.human_options
-            : [],
-          resume_condition: "Resolve this item to resume the obligation",
-          status: "OPEN",
-          created_at: new Date().toISOString(),
+          ...compiled[0],
+          reason: compiled[0].blocker_reason,
         });
         await saveTransition(state, options.saveState);
         continue;
@@ -402,19 +438,48 @@ export async function runAutonomousObligationLoop(options: {
         telemetry,
       };
     if (event.type === "HUMAN_BLOCK") {
-      if (!HUMAN_CATEGORIES.has(event.category)) {
+      if (event.technical || !HUMAN_CATEGORY_SET.has(event.category)) {
+        if (event.technical) {
+          item.failure_signatures = [
+            ...new Set([
+              ...(item.failure_signatures ?? []),
+              `technical:${event.message}`,
+            ]),
+          ];
+          item.attempts = (item.attempts ?? 0) + 1;
+          setStatus(state, item.id, "TECHNICAL_OPEN");
+          await saveTransition(state, options.saveState);
+          continue;
+        }
         protocolFailure(state, `invalid human category: ${event.category}`);
         await saveTransition(state, options.saveState);
         return { status: "FAILED", state, telemetry };
       }
+      const compiled = compileMinimalHumanRequired([
+        {
+          id: item.id,
+          obligation_id: item.id,
+          category: event.category,
+          blocker_reason: event.message,
+          question: event.message,
+          minimum_answer: event.message,
+          options: event.options ?? [],
+          resume_action: "Resolve this item to resume the obligation",
+          affected_obligations: [item.id],
+          scope: "RUN",
+          requires_human_judgment: true,
+        },
+      ]);
+      if (compiled.length !== 1) {
+        protocolFailure(state, "HUMAN_BLOCK candidate was auto-resolvable");
+        await saveTransition(state, options.saveState);
+        return { status: "FAILED", state, telemetry };
+      }
+      await persistHumanRequired(options.projectRoot, state.run_id, compiled);
       setStatus(state, item.id, "HUMAN_BLOCKED");
       state.human_backlog.push({
-        id: item.id,
-        obligation_id: item.id,
-        category: event.category,
-        question: event.message,
-        options: event.options ?? [],
-        status: "OPEN",
+        ...compiled[0],
+        reason: compiled[0].blocker_reason,
       });
       await saveTransition(state, options.saveState);
       continue;

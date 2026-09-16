@@ -13,6 +13,15 @@ import {
   type RunState,
 } from "./state.js";
 import { writeJsonAtomic } from "./atomic-json.js";
+import {
+  HUMAN_CATEGORIES as HUMAN_BOUNDARY_CATEGORIES,
+  type HumanCategory as BoundaryHumanCategory,
+} from "./human-boundary.js";
+import { persistHumanResponse } from "./human-boundary.js";
+import {
+  compileMinimalHumanRequired,
+  persistHumanRequired,
+} from "./human-boundary.js";
 
 export const OBLIGATION_STATUSES = [
   "RUNNABLE",
@@ -21,15 +30,9 @@ export const OBLIGATION_STATUSES = [
   "PASS",
 ] as const;
 export type ObligationStatus = (typeof OBLIGATION_STATUSES)[number];
-export const HUMAN_CATEGORIES = [
-  "BUSINESS_DECISION",
-  "CREDENTIAL_OR_SECRET",
-  "EXTERNAL_AUTHORIZATION",
-  "USER_ONLY_INPUT",
-  "IRREVERSIBLE_EXTERNAL_ACTION",
-] as const;
-export type HumanCategory = (typeof HUMAN_CATEGORIES)[number];
-/** Canonical five-category vocabulary shared with recovery decisions. */
+export const HUMAN_CATEGORIES = HUMAN_BOUNDARY_CATEGORIES;
+export type HumanCategory = BoundaryHumanCategory;
+/** Canonical human-category vocabulary shared with recovery decisions. */
 export const HUMAN_BACKLOG_CATEGORIES = HUMAN_CATEGORIES;
 export type HumanBacklogCategory = HumanCategory;
 
@@ -67,6 +70,12 @@ export interface HumanBacklogItem {
   status: "OPEN" | "RESOLVED";
   resolved_at?: string;
   answer?: string;
+  confirmed_facts?: string[];
+  blocker_reason?: string;
+  minimum_answer?: string;
+  evidence_paths?: string[];
+  affected_obligations?: string[];
+  scope?: "RUN" | "PERIOD" | "PERSISTENT";
 }
 export interface ObligationLedger {
   version: 1;
@@ -282,7 +291,7 @@ function categoryFromReason(reason: string): HumanCategory {
   const category = reason.split(/[:|]/, 1)[0];
   if (!isCategory(category))
     throw new Error(
-      "human block reason is not one of the five allowed categories"
+      "human block reason is not one of the six allowed categories"
     );
   return category;
 }
@@ -311,7 +320,7 @@ export async function markObligationHumanBlocked(
     categoryFromReason(decision.human_required_reason);
   if (!isCategory(category))
     throw new Error(
-      "human block category is not one of the five allowed categories"
+      "human block category is not one of the six allowed categories"
     );
   const backlog = await loadHumanBacklog(root, run.run_id);
   const id = `human:${run.run_id}:${obligationId}`;
@@ -333,6 +342,29 @@ export async function markObligationHumanBlocked(
     resume_condition: "Resolve this item to resume the obligation",
     status: "OPEN" as const,
   };
+  const compiled = compileMinimalHumanRequired([
+    {
+      id,
+      obligation_id: obligationId,
+      category,
+      confirmed_facts: [],
+      blocker_reason: decision.human_required_reason,
+      question: decision.human_question,
+      minimum_answer: decision.human_question,
+      options: decision.human_options,
+      evidence_paths: [],
+      resume_action: "Resolve this item to resume the obligation",
+      affected_obligations: [obligationId],
+      context: {
+        run_id: run.run_id,
+        round: run.round,
+        summary: decision.summary,
+      },
+      scope: "RUN",
+      requires_human_judgment: true,
+    },
+  ]);
+  await persistHumanRequired(root, run.run_id, compiled);
   if (!existing) {
     backlog.items.push(item);
     await writeJsonAtomic(humanBacklogPath(root, run.run_id), {
@@ -399,6 +431,17 @@ export async function resolveHumanBacklogItem(
   item.status = "RESOLVED";
   item.answer = answer;
   item.resolved_at = new Date().toISOString();
+  await persistHumanResponse(root, {
+    version: 1,
+    id: `response:${runId}:${backlogId}:${item.resolved_at}`,
+    run_id: runId,
+    obligation_id: item.obligation_id,
+    human_required_item_id: backlogId,
+    answer,
+    answered_at: item.resolved_at,
+    confirmation_type: "USER_CONFIRMED",
+    scope: item.scope ?? "RUN",
+  });
   await writeJsonAtomic(humanBacklogPath(root, runId), {
     ...backlog,
     updated_at: new Date().toISOString(),

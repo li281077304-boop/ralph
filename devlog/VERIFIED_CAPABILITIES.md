@@ -28,3 +28,12 @@ This registry is a durable, reviewable record of behavior that must not disappea
 - required behaviors: formal context has substantive USER OBSERVATION, CONFIRMED FACT, TECHNICAL ASSESSMENT, REJECTED ASSUMPTIONS, DECISION, and UNKNOWN / OPEN RISKS; exact task hash and metadata are read-back validated before invocation.
 - regression tests: `scripts/devlog-contract.test.mjs`.
 - real-UAT status: `NOT_YET_VERIFIED`.
+
+## HUMAN_BOUNDARY_MINIMAL_ESCALATION
+
+- status: `DETERMINISTIC_TESTED`; real human-response-to-resume UAT remains `NOT_YET_VERIFIED`.
+- permanent categories: `BUSINESS_DECISION`, `CREDENTIAL_OR_SECRET`, `EXTERNAL_AUTHORIZATION`, `USER_ONLY_INPUT`, `SOURCE_CONFIRMATION`, `IRREVERSIBLE_EXTERNAL_ACTION`.
+- required behaviors: technical failures and system-owned metadata stay technical; questions are minimized from durable evidence; global `WAITING_FOR_HUMAN` is allowed only when no `RUNNABLE` or `TECHNICAL_OPEN` obligation remains; raw answers are persisted as `HUMAN_RESPONSE.json`; RUN/PERIOD/PERSISTENT scope is explicit.
+- regression tests: `scripts/human-boundary.test.mjs`, `scripts/chief-v3-autonomous-obligation-loop.test.mjs`, `scripts/chief-v3-recovery.test.mjs`.
+- integration fixture: `scripts/fixtures/payroll-human-boundary-20260916.json` (anonymized six-obligation shape; UAT-10 excludes AN).
+- known limitation: Payroll adapter wiring and a real user-answer/resume cycle still require live validation.
