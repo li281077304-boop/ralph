@@ -149,6 +149,46 @@ function telemetryPhaseKey(phase) {
   return String(phase).toLowerCase();
 }
 
+export function resolveChiefStrategy(config, options = {}) {
+  const directHostOverride =
+    options.directHostOverride === true || options.cliChiefMode === "codex";
+  if (
+    config.chief_mode === "codex" &&
+    !directHostOverride &&
+    !options.phaseHandlers
+  ) {
+    return {
+      resolved_chief_strategy: "CONFIGURATION_ERROR",
+      external_warm_enabled: false,
+      external_recovery_enabled: false,
+      host_fallback_enabled: false,
+      direct_host_override: false,
+      override_source: null,
+      error:
+        "CONFIGURATION_ERROR: chief_mode: codex requires an explicit direct-host override; production defaults to External-first",
+    };
+  }
+  if (config.chief_mode === "codex") {
+    return {
+      resolved_chief_strategy: "DIRECT_HOST",
+      external_warm_enabled: false,
+      external_recovery_enabled: false,
+      host_fallback_enabled: false,
+      direct_host_override: true,
+      override_source:
+        options.cliChiefMode === "codex" ? "cli" : "explicit_option",
+    };
+  }
+  return {
+    resolved_chief_strategy: "EXTERNAL_FIRST",
+    external_warm_enabled: true,
+    external_recovery_enabled: Boolean(options.externalRecovery),
+    host_fallback_enabled: true,
+    direct_host_override: false,
+    override_source: null,
+  };
+}
+
 /** Route durable V3 phases; each existing runner owns its own writer lock. */
 export async function runV3BigLoop(options) {
   let projectRoot = resolve(options.projectRoot);
@@ -181,6 +221,21 @@ export async function runV3BigLoop(options) {
     !["codex", "external"].includes(config.chief_mode)
   )
     throw new Error("V3 Big Loop requires chief_mode: codex or external");
+  const chiefStrategy = resolveChiefStrategy(config, options);
+  await writeJsonAtomic(
+    join(getChiefRunDir(projectRoot, runId), "CHIEF_STRATEGY.json"),
+    {
+      version: 1,
+      run_id: runId,
+      ...chiefStrategy,
+      resolved_at: new Date().toISOString(),
+    }
+  );
+  if (chiefStrategy.error) {
+    const error = new Error(chiefStrategy.error);
+    error.code = "CONFIGURATION_ERROR";
+    throw error;
+  }
   const codexTransport = (logName, fallbackFrom) =>
     createV3CodexChiefTransport({
       projectRoot,
@@ -569,7 +624,7 @@ function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (!["--repo", "--run-id", "--config"].includes(arg))
+    if (!["--repo", "--run-id", "--config", "--chief-mode"].includes(arg))
       throw new Error(`Unknown argument: ${arg}`);
     const value = argv[++index];
     if (!value || value.startsWith("--"))
@@ -586,10 +641,17 @@ function parseArgs(argv) {
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const config = loadChiefConfig(args.config);
+  if (args.chief_mode !== undefined) {
+    if (!["codex", "external"].includes(args.chief_mode))
+      throw new Error("--chief-mode must be codex or external");
+    config.chief_mode = args.chief_mode;
+  }
   const outcome = await runV3BigLoop({
     projectRoot: args.repo,
     runId: args.run_id,
     config,
+    cliChiefMode: args.chief_mode,
+    directHostOverride: args.chief_mode === "codex",
     devlogRoot: process.env.RALPH_DEVLOG_ROOT ?? args.repo,
     onProgress: ({ round, message }) => {
       if (message) process.stdout.write(`[第 ${round} 轮] ${message}\n`);

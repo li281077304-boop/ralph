@@ -255,7 +255,7 @@ if (process.argv[1] && process.argv[1].endsWith("ralph-v3-supervisor.js")) {
   const values = {};
   for (let index = 0; index < cliArgs.length; index += 1) {
     const arg = cliArgs[index];
-    if (!["--repo", "--run-id", "--config"].includes(arg)) {
+    if (!["--repo", "--run-id", "--config", "--chief-mode"].includes(arg)) {
       process.stderr.write(`Unknown argument: ${arg}\n`);
       process.exitCode = 2;
       break;
@@ -277,17 +277,20 @@ if (process.argv[1] && process.argv[1].endsWith("ralph-v3-supervisor.js")) {
     );
     process.exitCode = 2;
   } else {
+    const controllerArgs = [
+      "--repo",
+      projectRoot,
+      "--run-id",
+      runId,
+      "--config",
+      configPath,
+    ];
+    if (values.chief_mode !== undefined)
+      controllerArgs.push("--chief-mode", values.chief_mode);
     runV3Supervisor({
       projectRoot,
       runId,
-      controllerArgs: [
-        "--repo",
-        projectRoot,
-        "--run-id",
-        runId,
-        "--config",
-        configPath,
-      ],
+      controllerArgs,
     })
       .then((result) => {
         process.stdout.write(

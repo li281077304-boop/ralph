@@ -333,6 +333,7 @@ test("chief_mode=codex Big Loop starts without GUI configuration", async () => {
     projectRoot: root,
     runId,
     config: { chief_mode: "codex", max_iterations: 3, timeout_seconds: 60 },
+    directHostOverride: true,
   });
   assert.equal(result.status, "TASK_PASS");
 });

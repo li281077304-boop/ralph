@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -44,6 +44,58 @@ const running = (phase, round = 1, task = "task-a") => ({
   status: "running",
   round,
   current_task_id: task,
+});
+const now = "2026-09-16T00:00:00.000Z";
+
+test("production codex config fails closed instead of silently selecting Host", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ralph-v3-chief-config-"));
+  const runId = "chief-config-error";
+  const runDir = join(root, ".ralph", "chief-runs", runId);
+  await mkdir(runDir, { recursive: true });
+  await assert.rejects(
+    runV3BigLoop({
+      projectRoot: root,
+      runId,
+      config: { chief_mode: "codex", max_iterations: 1, timeout_seconds: 60 },
+    }),
+    (error) => error.code === "CONFIGURATION_ERROR"
+  );
+  const strategy = JSON.parse(
+    await readFile(join(runDir, "CHIEF_STRATEGY.json"), "utf8")
+  );
+  assert.equal(strategy.resolved_chief_strategy, "CONFIGURATION_ERROR");
+  assert.equal(strategy.direct_host_override, false);
+});
+
+test("production default resolves and records External-first strategy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ralph-v3-chief-config-"));
+  const runId = "chief-config-external";
+  const runDir = join(root, ".ralph", "chief-runs", runId);
+  await mkdir(runDir, { recursive: true });
+  await writeFile(
+    join(runDir, "RUN_STATE.json"),
+    JSON.stringify({
+      run_id: runId,
+      version: 1,
+      phase: "DONE",
+      status: "done",
+      round: 1,
+      current_task_id: null,
+      started_at: now,
+      updated_at: now,
+    })
+  );
+  const result = await runV3BigLoop({
+    projectRoot: root,
+    runId,
+    config: { chief_mode: "external", max_iterations: 1, timeout_seconds: 60 },
+  });
+  assert.equal(result.status, "TASK_PASS");
+  const strategy = JSON.parse(
+    await readFile(join(runDir, "CHIEF_STRATEGY.json"), "utf8")
+  );
+  assert.equal(strategy.resolved_chief_strategy, "EXTERNAL_FIRST");
+  assert.equal(strategy.direct_host_override, false);
 });
 
 test("PASS flow routes Review PASS to the next SELECT", async () => {
