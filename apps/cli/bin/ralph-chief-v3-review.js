@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   acquireActiveWriterLock,
+  clearStaleActiveWriterLock,
+  inspectActiveWriterLock,
   applyReviewDecision,
   buildRecentDevlogContext,
   createDevlogHandoff,
@@ -188,6 +190,12 @@ export async function runV3ReviewTransport(options) {
   const devlogRoot = options.devlogRoot ?? projectRoot;
   const runId = options.runId;
   const statePath = runStatePath(projectRoot, runId);
+  const existingLock = await inspectActiveWriterLock(projectRoot, runId);
+  if (
+    existingLock.kind === "stale_same_host" ||
+    existingLock.kind === "stale_different_run"
+  )
+    await clearStaleActiveWriterLock(projectRoot, existingLock);
   const lock = await acquireActiveWriterLock(projectRoot, {
     run_id: runId,
     run_state_path: statePath,

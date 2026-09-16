@@ -186,6 +186,16 @@ export {
   type MachineGatePhaseResult,
 } from "./v3/machine-gate.js";
 export {
+  MissingRequiredGateEvidenceError,
+  assertCheckpointGateEvidence,
+  evaluateRequiredGateEvidence,
+  normalizeRequiredCommands,
+  requiredGateFailureSummary,
+  type GateEvidenceFailure,
+  type GateEvidenceFailureCode,
+  type RequiredGateVerdict,
+} from "./v3/gate-evidence.js";
+export {
   runCheckpointPhase,
   type V3CheckpointConfig,
   type CheckpointResult,
@@ -195,6 +205,45 @@ export {
   type V3WorkConfig,
   type V3WorkResult,
 } from "./v3/work.js";
+export {
+  CONTROLLED_STOP_REASONS,
+  evaluateSupervisorDisposition,
+  supervisorFailureFingerprint,
+  supervisorRestartBackoffMs,
+  type SupervisorDisposition,
+  type SupervisorDispositionKind,
+  type SupervisorEvaluationInput,
+  type SupervisorRunSnapshot,
+} from "./v3/supervisor-policy.js";
+export {
+  BACKEND_FAILURE_CLASSES,
+  BACKEND_STOP_EVIDENCE_FILENAME,
+  BACKEND_STOP_REASONS,
+  EXECUTION_BACKEND_KINDS,
+  EXECUTION_BACKEND_WIRING,
+  FAILOVER_ELIGIBLE_FAILURES,
+  FAILOVER_REQUIRES_USER_APPROVAL,
+  PRODUCTION_BACKEND_FAILOVER_ENABLED,
+  approvedFailoverBackends,
+  buildBackendStopEvidence,
+  classifyBackendFailure,
+  evaluateBackendDispatch,
+  inspectRoundArtifacts,
+  isFailoverEligible,
+  routeExecutionRequest,
+  type BackendAttempt,
+  type BackendDispatchDecision,
+  type BackendFailureClass,
+  type BackendRouteRecord,
+  type BackendStopEvidence,
+  type BackendStopReason,
+  type ExecutionBackend,
+  type ExecutionBackendKind,
+  type ExecutionBackendResult,
+  type ExecutionRequest,
+  type ExecutionRouteOutcome,
+  type RoundArtifacts,
+} from "./v3/execution-backend.js";
 export { createIsolatedWorktree } from "./v3/isolation.js";
 export {
   recordUsageLedger,

@@ -10,6 +10,12 @@ import { GitGuard, workspaceFingerprint } from "../git-guard.js";
 import { getChiefRunDir, getRoundDir } from "./rounds.js";
 import { loadRunState, saveRunState, type RunState } from "./state.js";
 import { writeJsonAtomic } from "./atomic-json.js";
+import {
+  evaluateRequiredGateEvidence,
+  normalizeRequiredCommands,
+  requiredGateFailureSummary,
+  type GateEvidenceFailure,
+} from "./gate-evidence.js";
 
 export type V3GateConfig = {
   commands?: string[];
@@ -22,6 +28,12 @@ export type MachineGatePhaseResult = {
   runState: RunState;
   gate?: MachineGateResult;
   policyFailure?: string;
+  /** Present when a REQUIRED command failed, timed out, never ran, or its
+   * evidence was missing/malformed. The run must not advance past the gate. */
+  requiredGateFailure?: {
+    signature: string;
+    failures: GateEvidenceFailure[];
+  };
 };
 
 function runPath(root: string, runId: string): string {
@@ -63,6 +75,22 @@ function failState(state: RunState, reason: string): RunState {
     ...state,
     phase: "FAILED",
     status: "failed",
+    failure_reason: reason,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+/**
+ * A failed REQUIRED command is a technical block, not a policy violation and
+ * not a reason to abandon the run. Routing to CHIEF_RECOVERY keeps the
+ * obligation TECHNICAL_OPEN so the Big Loop can diagnose and retry the Worker,
+ * and the gate is re-executed from scratch on the next attempt.
+ */
+function recoveryState(state: RunState, reason: string): RunState {
+  return {
+    ...state,
+    phase: "CHIEF_RECOVERY",
+    status: "running",
     failure_reason: reason,
     updated_at: new Date().toISOString(),
   };
@@ -124,8 +152,16 @@ export async function runMachineGatePhase(options: {
   const workerEvidencePath = join(roundDir, "worker_evidence.json");
   const workerEvidence = await readArtifact(workerEvidencePath);
   const existing = await readArtifact(outputPath);
+  // A PASSING gate artifact may be re-proven so that a crash between the gate
+  // and the checkpoint does not re-run commands. A FAILED artifact is never
+  // reusable evidence: the run was blocked because the required commands did
+  // not pass, so the only honest way forward is to execute them again on the
+  // current workspace. Re-using a failure would make "repair and re-gate"
+  // impossible and would pin the run in a permanent block.
+  const reusable =
+    existing !== undefined && existing.required_gate_passed === true;
   if (
-    !existing &&
+    !reusable &&
     (!workerEvidence ||
       workerEvidence.completed !== true ||
       JSON.stringify(workerEvidence.after_workspace_fingerprint) !==
@@ -140,7 +176,10 @@ export async function runMachineGatePhase(options: {
     return { runState: failed, policyFailure: failed.failure_reason };
   }
   if (!workerEvidence) throw new Error("Machine Gate requires Worker evidence");
-  if (existing) {
+  // An artifact that predates the required-command contract cannot be trusted
+  // by inspection, so it is regenerated: the configured commands are genuinely
+  // re-executed below rather than re-interpreted from weaker evidence.
+  if (reusable) {
     const expected = existing.after_workspace_fingerprint;
     if (
       expected &&
@@ -172,6 +211,28 @@ export async function runMachineGatePhase(options: {
         runState: failed,
         gate,
         policyFailure: failed.failure_reason,
+      };
+    }
+    // Resuming at the gate boundary must re-prove the required commands from
+    // the durable artifact. A recorded failure here can never be skipped just
+    // because the process restarted.
+    const resumedVerdict = evaluateRequiredGateEvidence(
+      existing,
+      options.config.commands
+    );
+    if (!resumedVerdict.ok) {
+      const blocked = recoveryState(
+        state,
+        `Machine Gate required command failure: ${requiredGateFailureSummary(resumedVerdict)}`
+      );
+      await saveRunState(path, blocked);
+      return {
+        runState: blocked,
+        gate,
+        requiredGateFailure: {
+          signature: resumedVerdict.signature,
+          failures: resumedVerdict.failures,
+        },
       };
     }
     const next: RunState = {
@@ -227,7 +288,19 @@ export async function runMachineGatePhase(options: {
     policy_passed: policyPassed,
     policy_violations: disallowed,
   };
-  await writeJsonAtomic(outputPath, artifactWithPolicy);
+  const configuredCommands = normalizeRequiredCommands(options.config.commands);
+  const requiredVerdict = evaluateRequiredGateEvidence(
+    { ...artifactWithPolicy, required_commands: configuredCommands },
+    configuredCommands
+  );
+  const artifactWithEvidence = {
+    ...artifactWithPolicy,
+    required_commands: configuredCommands,
+    required_gate_passed: requiredVerdict.ok,
+    required_gate_failures: requiredVerdict.failures,
+    gate_outcome: policyPassed && requiredVerdict.ok ? "PASS" : "FAILED",
+  };
+  await writeJsonAtomic(outputPath, artifactWithEvidence);
   if (!policyPassed) {
     const failed = failState(
       state,
@@ -238,6 +311,24 @@ export async function runMachineGatePhase(options: {
       runState: failed,
       gate: { ...gate, trackedChanges: disallowed },
       policyFailure: failed.failure_reason,
+    };
+  }
+  // Fail closed: a REQUIRED command that failed, timed out, never ran, or has
+  // missing/malformed evidence blocks checkpoint, commit, push and every later
+  // phase. `policy_passed` is deliberately not consulted here.
+  if (!requiredVerdict.ok) {
+    const blocked = recoveryState(
+      state,
+      `Machine Gate required command failure: ${requiredGateFailureSummary(requiredVerdict)}`
+    );
+    await saveRunState(path, blocked);
+    return {
+      runState: blocked,
+      gate,
+      requiredGateFailure: {
+        signature: requiredVerdict.signature,
+        failures: requiredVerdict.failures,
+      },
     };
   }
   const next = {

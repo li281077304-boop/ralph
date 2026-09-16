@@ -15,6 +15,12 @@ const ASSISTANT_SELECTORS = [
   'article[data-testid^="conversation-turn"]',
 ];
 
+const STOP_SELECTORS = [
+  '[data-testid="stop-button"]',
+  'button[aria-label*="Stop" i]',
+  'button[aria-label*="停止" i]',
+];
+
 export const INPUT_SELECTORS = [
   "#prompt-textarea",
   '[data-testid="textbox"]',
@@ -191,7 +197,7 @@ export async function runExternalChiefGuiRoundtrip(
   dependencies = {}
 ) {
   const env = loadExtensionEnv(config.extension_env_file);
-  const session = config.session ?? "chrome";
+  const session = resolveSessionName(config, request);
   const timeoutMs = config.timeout_ms ?? 180_000;
   const maxAttempts = Math.max(
     1,
@@ -202,6 +208,11 @@ export async function runExternalChiefGuiRoundtrip(
     Number(config.reply_grace_ms ?? request.replyGraceMs ?? 5_000)
   );
   const runCli = dependencies.runPlaywrightCli ?? runPlaywrightCli;
+  const runCommand =
+    dependencies.runPlaywrightCliCommand ??
+    (dependencies.runPlaywrightCli || dependencies.ensureConversationTab
+      ? async () => ({ ok: true })
+      : runCliCommand);
   const ensureTab = dependencies.ensureConversationTab ?? ensureConversationTab;
   const artifact = await loadTransportArtifact(
     request.projectRoot,
@@ -217,140 +228,150 @@ export async function runExternalChiefGuiRoundtrip(
     chief_last_attempt_at: null,
   };
   let lastError;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const selection = await ensureTab(
-      session,
-      [artifact?.resolved_conversation_url, config.conversation_url],
-      env,
-      timeoutMs
-    );
-    const conversationUrl =
-      selection?.url ?? realConversationUrl(config.conversation_url);
-    if (!conversationUrl)
-      throw new GuiBridgeError(
-        "CONVERSATION_NOT_FOUND",
-        "No ChatGPT conversation could be resolved"
+  try {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const selection = await ensureTab(
+        session,
+        [artifact?.resolved_conversation_url, config.conversation_url],
+        env,
+        timeoutMs
       );
+      const conversationUrl =
+        selection?.url ?? realConversationUrl(config.conversation_url);
+      if (!conversationUrl)
+        throw new GuiBridgeError(
+          "CONVERSATION_NOT_FOUND",
+          "No ChatGPT conversation could be resolved"
+        );
 
-    // A timeout can race with a delayed assistant response. Always probe the
-    // existing conversation before submitting anything, including retries.
-    const probeCode = extensionRoundtripCode(
-      conversationUrl,
-      request.message,
-      request.identity,
-      request.closingMarker,
-      Math.min(timeoutMs, graceMs || timeoutMs),
-      { submit: false, graceMs }
-    );
-    const probe = await runCli(session, probeCode, env, timeoutMs + 30_000);
-    if (probe.reply) {
-      meta.chief_existing_reply_recoveries += 1;
-      return {
-        reply: probe.reply,
-        recoveryMode: "EXISTING_REPLY",
-        ...meta,
-      };
-    }
-    if (
-      probe.errorCode === "ASSISTANT_REPLY_INCOMPLETE" &&
-      attempt + 1 >= maxAttempts
-    ) {
-      lastError = probe;
-      break;
-    }
-    if (
-      probe.errorCode &&
-      probe.errorCode !== "ASSISTANT_REPLY_TIMEOUT" &&
-      probe.errorCode !== "ASSISTANT_REPLY_INCOMPLETE" &&
-      probe.errorCode !== "NO_EXISTING_REPLY"
-    ) {
-      throw new GuiBridgeError(
-        probe.errorCode,
-        probe.error ?? "Existing assistant reply probe failed"
+      // A timeout can race with a delayed assistant response. Always probe the
+      // existing conversation before submitting anything, including retries.
+      const probeCode = extensionRoundtripCode(
+        conversationUrl,
+        request.message,
+        request.identity,
+        request.closingMarker,
+        Math.min(timeoutMs, graceMs || timeoutMs),
+        { submit: false, graceMs }
       );
-    }
+      const probe = await runCli(session, probeCode, env, timeoutMs + 30_000);
+      if (probe.reply) {
+        meta.chief_existing_reply_recoveries += 1;
+        return {
+          reply: probe.reply,
+          recoveryMode: "EXISTING_REPLY",
+          ...meta,
+        };
+      }
+      if (
+        probe.errorCode === "ASSISTANT_REPLY_INCOMPLETE" &&
+        attempt + 1 >= maxAttempts
+      ) {
+        lastError = probe;
+        break;
+      }
+      if (
+        probe.errorCode &&
+        probe.errorCode !== "ASSISTANT_REPLY_TIMEOUT" &&
+        probe.errorCode !== "ASSISTANT_REPLY_INCOMPLETE" &&
+        probe.errorCode !== "NO_EXISTING_REPLY"
+      ) {
+        throw new GuiBridgeError(
+          probe.errorCode,
+          probe.error ?? "Existing assistant reply probe failed"
+        );
+      }
 
-    if (probe.errorCode === "ASSISTANT_REPLY_INCOMPLETE") {
-      lastError = probe;
-      continue;
-    }
+      if (probe.errorCode === "ASSISTANT_REPLY_INCOMPLETE") {
+        lastError = probe;
+        continue;
+      }
 
-    // No matching reply exists: submit once for this bounded attempt.
-    const code = extensionRoundtripCode(
-      conversationUrl,
-      request.message,
-      request.identity,
-      request.closingMarker,
-      timeoutMs,
-      { submit: !alreadySubmitted, graceMs: 0 }
-    );
-    if (request.projectRoot && request.runId && !alreadySubmitted) {
-      await saveTransportArtifact(request.projectRoot, request.runId, {
-        version: 1,
-        run_id: request.runId,
-        resolved_conversation_url: conversationUrl,
-        resolved_at: artifact?.resolved_at ?? new Date().toISOString(),
-        last_successful_handoff_hash:
-          artifact?.last_successful_handoff_hash ?? "",
-        submission_started_handoff_hash: request.identity,
-        submitted_at: new Date().toISOString(),
-      });
-      alreadySubmitted = true;
-    }
-    meta.chief_request_attempts += 1;
-    meta.chief_last_attempt_at = new Date().toISOString();
-    const result = await runCli(session, code, env, timeoutMs + 30_000);
-    if (result.reply) {
-      if (request.projectRoot && request.runId) {
-        const latest = (await loadTransportArtifact(
-          request.projectRoot,
-          request.runId
-        )) ?? {
+      // No matching reply exists: submit once for this bounded attempt.
+      const code = extensionRoundtripCode(
+        conversationUrl,
+        request.message,
+        request.identity,
+        request.closingMarker,
+        timeoutMs,
+        { submit: !alreadySubmitted, graceMs: 0 }
+      );
+      if (request.projectRoot && request.runId && !alreadySubmitted) {
+        await saveTransportArtifact(request.projectRoot, request.runId, {
           version: 1,
           run_id: request.runId,
           resolved_conversation_url: conversationUrl,
-          resolved_at: new Date().toISOString(),
-          last_successful_handoff_hash: "",
-        };
-        await saveTransportArtifact(request.projectRoot, request.runId, {
-          ...latest,
-          resolved_conversation_url: chatgptUrl(result.url) ?? conversationUrl,
-          last_successful_handoff_hash: request.identity,
-          submitted_handoff_hash: request.identity,
-          submitted_at: latest.submitted_at ?? new Date().toISOString(),
+          resolved_at: artifact?.resolved_at ?? new Date().toISOString(),
+          last_successful_handoff_hash:
+            artifact?.last_successful_handoff_hash ?? "",
+          submission_started_handoff_hash: request.identity,
+          submitted_at: new Date().toISOString(),
         });
+        alreadySubmitted = true;
       }
-      return { reply: result.reply, ...meta };
+      meta.chief_request_attempts += 1;
+      meta.chief_last_attempt_at = new Date().toISOString();
+      const result = await runCli(session, code, env, timeoutMs + 30_000);
+      if (result.reply) {
+        if (request.projectRoot && request.runId) {
+          const latest = (await loadTransportArtifact(
+            request.projectRoot,
+            request.runId
+          )) ?? {
+            version: 1,
+            run_id: request.runId,
+            resolved_conversation_url: conversationUrl,
+            resolved_at: new Date().toISOString(),
+            last_successful_handoff_hash: "",
+          };
+          await saveTransportArtifact(request.projectRoot, request.runId, {
+            ...latest,
+            resolved_conversation_url:
+              chatgptUrl(result.url) ?? conversationUrl,
+            last_successful_handoff_hash: request.identity,
+            submitted_handoff_hash: request.identity,
+            submitted_at: latest.submitted_at ?? new Date().toISOString(),
+          });
+        }
+        return { reply: result.reply, ...meta };
+      }
+      lastError = result;
+      const resultErrorCode =
+        result.errorCode ??
+        (result.noExistingReply ? "ASSISTANT_REPLY_TIMEOUT" : undefined);
+      if (!result.errorCode && result.noExistingReply)
+        lastError = {
+          ...result,
+          errorCode: "ASSISTANT_REPLY_TIMEOUT",
+          error: "No reply for previously submitted handoff",
+        };
+      if (
+        resultErrorCode !== "ASSISTANT_REPLY_TIMEOUT" &&
+        resultErrorCode !== "ASSISTANT_REPLY_INCOMPLETE"
+      )
+        throw new GuiBridgeError(
+          result.errorCode ?? "VERDICT_INVALID",
+          result.error ??
+            "Playwright Extension did not return an assistant reply"
+        );
+      if (result.errorCode === "ASSISTANT_REPLY_TIMEOUT")
+        meta.chief_timeouts += 1;
     }
-    lastError = result;
-    const resultErrorCode =
-      result.errorCode ??
-      (result.noExistingReply ? "ASSISTANT_REPLY_TIMEOUT" : undefined);
-    if (!result.errorCode && result.noExistingReply)
-      lastError = {
-        ...result,
-        errorCode: "ASSISTANT_REPLY_TIMEOUT",
-        error: "No reply for previously submitted handoff",
-      };
-    if (
-      resultErrorCode !== "ASSISTANT_REPLY_TIMEOUT" &&
-      resultErrorCode !== "ASSISTANT_REPLY_INCOMPLETE"
-    )
-      throw new GuiBridgeError(
-        result.errorCode ?? "VERDICT_INVALID",
-        result.error ?? "Playwright Extension did not return an assistant reply"
-      );
-    if (result.errorCode === "ASSISTANT_REPLY_TIMEOUT")
-      meta.chief_timeouts += 1;
-  }
 
-  const error = new GuiBridgeError(
-    lastError?.errorCode ?? "ASSISTANT_REPLY_TIMEOUT",
-    lastError?.error ?? "Playwright Extension did not return an assistant reply"
-  );
-  Object.assign(error, meta);
-  throw error;
+    const error = new GuiBridgeError(
+      lastError?.errorCode ?? "ASSISTANT_REPLY_TIMEOUT",
+      lastError?.error ??
+        "Playwright Extension did not return an assistant reply"
+    );
+    Object.assign(error, meta);
+    throw error;
+  } finally {
+    // Sessions are disposable run-owned resources.  Detach only this session;
+    // never close Chrome or touch another Playwright client.
+    await runCommand(session, ["detach", "--json"], env, 10_000).catch(
+      () => undefined
+    );
+  }
 }
 
 /** Cheap deterministic preflight used so configuration failures do not count as real requests. */
@@ -372,23 +393,24 @@ async function ensureConversationTab(
   env,
   timeoutMs = 30_000
 ) {
+  // Stateless one-shot transport: stale sessions are never reused.
+  await runCliCommand(session, ["detach", "--json"], env, 10_000).catch(
+    () => undefined
+  );
+  const attached = await runCliCommand(
+    session,
+    ["attach", "--extension=chrome", "--json"],
+    env,
+    30_000
+  );
+  if (!attached.ok)
+    throw new GuiBridgeError("CHROME_ATTACH_FAILED", attached.error);
   let listed = await runCliCommand(
     session,
     ["tab-list", "--json"],
     env,
     30_000
   );
-  if (!listed.ok && /not open/i.test(listed.error ?? "")) {
-    const attached = await runCliCommand(
-      session,
-      ["attach", "--extension=chrome", "--json"],
-      env,
-      30_000
-    );
-    if (!attached.ok)
-      throw new GuiBridgeError("CHROME_ATTACH_FAILED", attached.error);
-    listed = await runCliCommand(session, ["tab-list", "--json"], env, 30_000);
-  }
   if (!listed.ok)
     throw new GuiBridgeError("CHROME_ATTACH_FAILED", listed.error);
   const entries = tabEntries(listed.result);
@@ -466,6 +488,29 @@ async function ensureConversationTab(
     "INPUT_NOT_FOUND",
     `No writable ChatGPT composer was found after bounded acquisition: ${lastError ?? "unknown"}`
   );
+}
+
+function isRecoverableSessionError(error) {
+  return /not open|session (?:not found|closed|invalid)|no browser attached/i.test(
+    String(error ?? "")
+  );
+}
+
+/**
+ * Every production run gets an isolated Playwright session name.  An
+ * explicitly configured non-generic name remains available for tests and
+ * operators, while the legacy "chrome" default is never reused across runs.
+ */
+function resolveSessionName(config = {}, request = {}) {
+  const runId = String(request.runId ?? "run").replace(
+    /[^A-Za-z0-9._-]+/g,
+    "-"
+  );
+  const identity = String(request.identity ?? "request").replace(
+    /[^A-Za-z0-9._-]+/g,
+    "-"
+  );
+  return `ralph-chief-${runId}-${identity.slice(0, 16)}`;
 }
 
 function tabEntries(result) {
@@ -657,9 +702,22 @@ export function extensionRoundtripCode(
     const graceMs = ${JSON.stringify(graceMs)};
     if (!page.url().startsWith(expectedUrl))
       throw new Error("CONVERSATION_NOT_FOUND: " + page.url());
-    async function scanReply(waitMs) {
+    async function stopVisible() {
+      for (const selector of ${JSON.stringify(STOP_SELECTORS)}) {
+        const stop = page.locator(selector);
+        let count = 0;
+        try { count = await stop.count(); } catch { continue; }
+        for (let index = 0; index < count; index += 1) {
+          try { if (await stop.nth(index).isVisible()) return true; } catch {}
+        }
+      }
+      return false;
+    }
+    async function scanReply(waitMs, requireStable = false) {
       const scanDeadline = Date.now() + waitMs;
       let reply = "";
+      let previousReply = "";
+      let stableScans = 0;
       while (Date.now() < scanDeadline || waitMs === 0) {
         let foundIdentity = false;
         for (const selector of ${JSON.stringify(ASSISTANT_SELECTORS)}) {
@@ -672,7 +730,14 @@ export function extensionRoundtripCode(
             if (text.includes(identity)) {
               foundIdentity = true;
               reply = text;
-              if (text.includes(${JSON.stringify(closingMarker)}))
+              if (text === previousReply) stableScans += 1;
+              else {
+                previousReply = text;
+                stableScans = 0;
+              }
+              const completeMarker = text.includes(${JSON.stringify(closingMarker)});
+              const stable = stableScans >= 2;
+              if (completeMarker && (!requireStable || (stable && !(await stopVisible()))))
                 return { reply, complete: true };
             }
           }
@@ -743,7 +808,7 @@ export function extensionRoundtripCode(
       if (String(error?.message ?? error).startsWith("SEND_FAILED:")) throw error;
       throw new Error("SEND_FAILED: submission state was ambiguous; " + JSON.stringify(await diagnostics()));
     }
-    const response = await scanReply(timeoutMs);
+    const response = await scanReply(timeoutMs, true);
     if (response.complete) return { reply: response.reply };
     throw new Error(response.partial ? "ASSISTANT_REPLY_INCOMPLETE" : "ASSISTANT_REPLY_TIMEOUT");
   })`;
@@ -773,20 +838,15 @@ function runPlaywrightCli(session, code, env, timeoutMs) {
 
 function runPlaywrightCode(session, code, env, timeoutMs) {
   return new Promise((resolveResult) => {
-    const child = spawn(
-      "pnpm",
-      [
-        "dlx",
-        "--yes",
-        "--package=@playwright/cli",
-        "playwright-cli",
-        `-s=${session}`,
-        "run-code",
-        code,
-        "--json",
-      ],
-      { env, stdio: ["ignore", "pipe", "pipe"] }
+    const invocation = playwrightCliInvocation(
+      session,
+      ["run-code", code, "--json"],
+      env
     );
+    const child = spawn(invocation.command, invocation.args, {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
@@ -828,18 +888,11 @@ function outerError(parsed) {
 
 function runCliCommand(session, args, env, timeoutMs) {
   return new Promise((resolveResult) => {
-    const child = spawn(
-      "pnpm",
-      [
-        "dlx",
-        "--yes",
-        "--package=@playwright/cli",
-        "playwright-cli",
-        `-s=${session}`,
-        ...args,
-      ],
-      { env, stdio: ["ignore", "pipe", "pipe"] }
-    );
+    const invocation = playwrightCliInvocation(session, args, env);
+    const child = spawn(invocation.command, invocation.args, {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
@@ -864,6 +917,28 @@ function runCliCommand(session, args, env, timeoutMs) {
       }
     });
   });
+}
+
+function playwrightCliInvocation(session, args, env) {
+  const configured = env.RALPH_PLAYWRIGHT_CLI_BIN;
+  if (configured) {
+    const isScript = configured.endsWith(".js");
+    return {
+      command: isScript ? process.execPath : configured,
+      args: [...(isScript ? [configured] : []), `-s=${session}`, ...args],
+    };
+  }
+  return {
+    command: "pnpm",
+    args: [
+      "dlx",
+      "--yes",
+      "--package=@playwright/cli",
+      "playwright-cli",
+      `-s=${session}`,
+      ...args,
+    ],
+  };
 }
 
 function classifyBridgeError(error, signal) {
@@ -892,6 +967,7 @@ export {
   composerProbeCode,
   ensureConversationTab,
   realConversationUrl,
+  resolveSessionName,
   sameConversation,
   tabEntries,
 };

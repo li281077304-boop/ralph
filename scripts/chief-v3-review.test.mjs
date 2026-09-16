@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
@@ -91,7 +92,7 @@ async function seed(gatePassed = true) {
     started_at: now,
     updated_at: now,
   });
-  await runV3WorkSlice({
+  const work = await runV3WorkSlice({
     projectRoot: root,
     runId,
     config: config(),
@@ -118,13 +119,24 @@ async function seed(gatePassed = true) {
     getChiefRunDir(root, runId),
     "rounds/001/checkpoint.json"
   );
-  const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
-  checkpoint.remote_url = "https://github.com/acme/ralph.git";
-  await writeFile(checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`);
+  // A failed REQUIRED command must not produce a checkpoint at all, so the
+  // fixture only rewrites the remote URL when a checkpoint legitimately exists.
+  let checkpoint;
+  try {
+    checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (checkpoint) {
+    checkpoint.remote_url = "https://github.com/acme/ralph.git";
+    await writeFile(checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`);
+  }
   return {
     root,
     bare,
     runId,
+    work,
+    checkpoint,
     resolveRemoteUrl: () => "https://github.com/acme/ralph.git",
   };
 }
@@ -262,8 +274,47 @@ test("existing review handoff is reused and accepted recovery skips GUI", async 
   assert.equal(recovered.guiCalls, 0);
 });
 
-test("PASS is rejected when Gate failed", async () => {
+test("a failed required gate command can never be reviewed: no checkpoint exists", async () => {
   const f = await seed(false);
+  assert.equal(f.work.runState.phase, "CHIEF_RECOVERY");
+  assert.equal(f.checkpoint, undefined);
+  const calls = { count: 0 };
+  await assert.rejects(
+    runV3ReviewTransport({
+      projectRoot: f.root,
+      runId: f.runId,
+      transport: transport(calls),
+    }),
+    /Review requires CHIEF_REVIEW\/FINAL_REVIEW/
+  );
+  assert.equal(calls.count, 0, "no Chief call may happen without a checkpoint");
+  const state = JSON.parse(
+    await readFile(
+      join(getChiefRunDir(f.root, f.runId), "RUN_STATE.json"),
+      "utf8"
+    )
+  );
+  assert.equal(state.phase, "CHIEF_RECOVERY");
+  assert.equal(state.round, 1);
+});
+
+test("PASS is rejected when durable Gate evidence says passed=false", async () => {
+  const f = await seed(true);
+  const roundDir = join(getChiefRunDir(f.root, f.runId), "rounds/001");
+  const gatePath = join(roundDir, "machine_gate.json");
+  const checkpointPath = join(roundDir, "checkpoint.json");
+  const gate = JSON.parse(await readFile(gatePath, "utf8"));
+  // Forge the strongest-looking evidence: policy and required attestation both
+  // hold, yet the gate as a whole reports failure. PASS must still be refused.
+  const forged = { ...gate, passed: false };
+  const forgedBytes = `${JSON.stringify(forged, null, 2)}\n`;
+  await writeFile(gatePath, forgedBytes);
+  const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+  checkpoint.gate_artifact_hash = createHash("sha256")
+    .update(Buffer.from(forgedBytes, "utf8"))
+    .digest("hex");
+  await writeFile(checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`);
+
   const calls = { count: 0 };
   await assert.rejects(
     runV3ReviewTransport({

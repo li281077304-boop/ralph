@@ -562,7 +562,10 @@ export async function verifyReviewCheckpoint(
   const gateArtifactHash = sha256(gateBytes);
   if (
     gateArtifactHash !== checkpoint.gate_artifact_hash ||
-    gate.policy_passed !== true
+    gate.policy_passed !== true ||
+    // Required-command evidence must be positively attested. A reviewable
+    // checkpoint can never be blessed on policy success alone.
+    gate.required_gate_passed !== true
   )
     throw new Error("Machine Gate evidence is not bound to checkpoint");
   const remoteUrl = String(checkpoint.remote_url ?? "");

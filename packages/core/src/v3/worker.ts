@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, unlink } from "node:fs/promises";
+import { access, mkdir, readFile, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type { Stage } from "../stages.js";
@@ -330,9 +330,41 @@ function cleanStatus(root: string): string {
     .split("\n")
     .filter((line) => {
       const path = line.slice(2).trim().replaceAll("\\", "/");
-      return path !== "devlog" && !path.startsWith("devlog/");
+      // Ralph runtime state is intentionally created inside the project
+      // worktree. It is durable evidence, not a Worker code change, and must
+      // not make an otherwise isolated worktree fail the preflight clean
+      // guard. Git-tracked source changes remain visible to this check.
+      return (
+        path !== "devlog" &&
+        !path.startsWith("devlog/") &&
+        path !== ".ralph" &&
+        !path.startsWith(".ralph/")
+      );
     })
     .join("\n");
+}
+
+async function hasInterruptedWorkerAttempt(
+  root: string,
+  runId: string,
+  round: number
+): Promise<boolean> {
+  const roundDirPath = getRoundDir(getChiefRunDir(root, runId), round);
+  try {
+    await access(join(roundDirPath, "worker_prompt.md"));
+    await access(join(roundDirPath, "worker_output.json"));
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    try {
+      await access(join(roundDirPath, "worker_prompt.md"));
+      return true;
+    } catch (promptError) {
+      if ((promptError as NodeJS.ErrnoException).code === "ENOENT")
+        return false;
+      throw promptError;
+    }
+  }
 }
 
 function branch(root: string): string {
@@ -681,7 +713,16 @@ export async function runWorkerPhase(options: {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  if (cleanStatus(root) !== "" && !technicalRecovery) {
+  const interruptedWorkerAttempt = await hasInterruptedWorkerAttempt(
+    root,
+    run.run_id,
+    run.round
+  );
+  if (
+    cleanStatus(root) !== "" &&
+    !technicalRecovery &&
+    !interruptedWorkerAttempt
+  ) {
     const failed = failState(
       run,
       "WORKER requires a clean Git worktree before execution"

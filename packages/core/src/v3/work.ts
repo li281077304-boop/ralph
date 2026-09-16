@@ -1,7 +1,12 @@
 import { join, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 
-import { acquireActiveWriterLock, releaseActiveWriterLock } from "./lock.js";
+import {
+  acquireActiveWriterLock,
+  clearStaleActiveWriterLock,
+  inspectActiveWriterLock,
+  releaseActiveWriterLock,
+} from "./lock.js";
 import { getChiefRunDir } from "./rounds.js";
 import { loadRunState, saveRunState, type RunState } from "./state.js";
 import {
@@ -11,6 +16,7 @@ import {
 } from "./worker.js";
 import { runMachineGatePhase } from "./machine-gate.js";
 import { runCheckpointPhase } from "./checkpoint.js";
+import { MissingRequiredGateEvidenceError } from "./gate-evidence.js";
 import { dispatchPhase } from "./phases.js";
 import type { MachineGateOptions, MachineGateResult } from "../machine-gate.js";
 import type { GoalTransport } from "./goal-worker.js";
@@ -49,6 +55,15 @@ export async function runV3WorkSlice(options: {
 }): Promise<V3WorkResult> {
   const projectRoot = resolve(options.projectRoot);
   const statePath = runPath(projectRoot, options.runId);
+  const existingLock = await inspectActiveWriterLock(
+    projectRoot,
+    options.runId
+  );
+  if (
+    existingLock.kind === "stale_same_host" ||
+    existingLock.kind === "stale_different_run"
+  )
+    await clearStaleActiveWriterLock(projectRoot, existingLock);
   const lock = await acquireActiveWriterLock(projectRoot, {
     run_id: options.runId,
     run_state_path: statePath,
@@ -88,7 +103,10 @@ export async function runV3WorkSlice(options: {
         })) as Awaited<ReturnType<typeof runMachineGatePhase>>;
         state = gated.runState;
         gate = gated.gate;
-        if (state.phase === "FAILED") return { runState: state, gate };
+        // Both a policy violation (FAILED) and a required-command failure
+        // (CHIEF_RECOVERY) must stop this slice before CHECKPOINT.
+        if (state.phase === "FAILED" || state.phase === "CHIEF_RECOVERY")
+          return { runState: state, gate };
       }
       if (state.phase === "CHECKPOINT") {
         // A crash can occur after the gate artifact is durable but before the
@@ -127,7 +145,27 @@ export async function runV3WorkSlice(options: {
               config: { remote: options.config.remote },
               gate,
             }),
-        })) as Awaited<ReturnType<typeof runCheckpointPhase>>;
+        }).catch((error: unknown) => {
+          // A crash can leave a run parked at CHECKPOINT with a gate artifact
+          // that predates the required-command contract. Never trust the
+          // weaker evidence: rewind to MACHINE_GATE so the configured commands
+          // are genuinely re-executed and re-judged. This is not a bypass.
+          if (error instanceof MissingRequiredGateEvidenceError) return error;
+          throw error;
+        })) as
+          | Awaited<ReturnType<typeof runCheckpointPhase>>
+          | MissingRequiredGateEvidenceError;
+        if (checkpoint instanceof MissingRequiredGateEvidenceError) {
+          const rewound: RunState = {
+            ...state,
+            phase: "MACHINE_GATE",
+            status: "running",
+            failure_reason: `checkpoint refused legacy gate evidence: ${checkpoint.message}`,
+            updated_at: new Date().toISOString(),
+          };
+          await saveRunState(statePath, rewound);
+          return { runState: rewound, gate };
+        }
         return {
           runState: checkpoint.runState,
           gate,

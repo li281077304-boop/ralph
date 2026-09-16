@@ -245,8 +245,9 @@ test("Worker commit and protected/forbidden edits fail closed", async () => {
   }
 });
 
-test("Machine Gate command failure still reaches checkpoint with failed evidence", async () => {
+test("Machine Gate required command failure never reaches checkpoint", async () => {
   const f = await fixture();
+  const headBefore = git(f.root, ["rev-parse", "HEAD"]);
   const result = await runV3WorkSlice({
     projectRoot: f.root,
     runId: f.runId,
@@ -270,8 +271,46 @@ test("Machine Gate command failure still reaches checkpoint with failed evidence
       ],
     }),
   });
-  assert.equal(result.runState.phase, "CHIEF_REVIEW");
+  // A failed REQUIRED command is a technical block, never a checkpoint.
+  assert.equal(result.runState.phase, "CHIEF_RECOVERY");
   assert.equal(result.gate?.passed, false);
+  assert.equal(git(f.root, ["rev-parse", "HEAD"]), headBefore);
+  await assert.rejects(
+    readFile(
+      join(getChiefRunDir(f.root, f.runId), "rounds/001/checkpoint.json"),
+      "utf8"
+    ),
+    (error) => error.code === "ENOENT"
+  );
+});
+
+test("a passing Machine Gate still reaches checkpoint", async () => {
+  const f = await fixture();
+  const result = await runV3WorkSlice({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: config(),
+    runAgent: async () => {
+      await writeFile(join(f.root, "app.txt"), "worker\n");
+      return { text: "done", meta: {} };
+    },
+    runGate: async () => ({
+      passed: true,
+      commands: [
+        {
+          command: "gate",
+          kind: "required",
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          durationMs: 1,
+          timedOut: false,
+        },
+      ],
+    }),
+  });
+  assert.equal(result.runState.phase, "CHIEF_REVIEW");
+  assert.equal(result.gate?.passed, true);
 });
 
 test("Gate tracked source mutation is a policy failure and never checkpoints", async () => {

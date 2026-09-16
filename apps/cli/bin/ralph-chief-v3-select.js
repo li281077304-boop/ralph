@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import {
   applySelectDecision,
   acquireActiveWriterLock,
+  clearStaleActiveWriterLock,
+  inspectActiveWriterLock,
   buildRecentDevlogContext,
   getChiefRunDir,
   loadChiefConfig,
@@ -129,6 +131,12 @@ export async function runV3SelectTransport(options) {
   const devlogRoot = options.devlogRoot ?? projectRoot;
   const runId = options.runId;
   const runStatePathValue = runStatePath(projectRoot, runId);
+  const existingLock = await inspectActiveWriterLock(projectRoot, runId);
+  if (
+    existingLock.kind === "stale_same_host" ||
+    existingLock.kind === "stale_different_run"
+  )
+    await clearStaleActiveWriterLock(projectRoot, existingLock);
   const lock = await acquireActiveWriterLock(projectRoot, {
     run_id: runId,
     run_state_path: runStatePathValue,

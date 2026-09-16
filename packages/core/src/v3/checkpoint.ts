@@ -9,6 +9,7 @@ import { loadRunState, saveRunState, type RunState } from "./state.js";
 import { writeJsonAtomic, writeJsonImmutable } from "./atomic-json.js";
 import type { MachineGateResult } from "../machine-gate.js";
 import { GitGuard, workspaceFingerprint } from "../git-guard.js";
+import { assertCheckpointGateEvidence } from "./gate-evidence.js";
 
 export type V3CheckpointConfig = {
   remote?: string;
@@ -239,6 +240,11 @@ export async function runCheckpointPhase(options: {
       `Machine Gate policy failure: ${(gateArtifact.policy_violations as string[]).join(", ")}`
     );
   }
+  // Second, independent enforcement of the fail-closed invariant. Even if a
+  // caller reached CHECKPOINT by another route, no commit, push or checkpoint
+  // artifact may exist unless the durable gate artifact attests that every
+  // required command actually ran and passed.
+  assertCheckpointGateEvidence(gateArtifact);
   let intent = await readOptional(intentPath);
   const currentHead = git(root, ["rev-parse", "HEAD"]);
   if (!intent) {

@@ -1,0 +1,262 @@
+{
+  "version": 1,
+  "source": "real production run, anonymized (run-relative paths only)",
+  "anonymized": true,
+  "run": {
+    "run_id": "dashboard-widget-real-20260916-r2",
+    "task_id": "dashboard-android-widget-p0",
+    "project_id": "edu-ops-dashboard",
+    "started_at": "2026-09-16T02:33:40.620Z",
+    "final_phase": "DONE",
+    "final_status": "done",
+    "final_round": 5,
+    "final_head_sha": "a115f1b6ec6f8561fbc8272fb8540ab9f2639116",
+    "final_tree_sha": "bb6dc2d21d63fbc0bf13dd5a8f2cb2d7e3978953",
+    "obligations": [
+      {
+        "id": "task:dashboard-android-widget-p0",
+        "status": "PASS"
+      }
+    ]
+  },
+  "phase_chain": [
+    {
+      "round": 1,
+      "chief_backend": "HOST_CODEX",
+      "review_action": "PATCH",
+      "final_review_action": null
+    },
+    {
+      "round": 2,
+      "chief_backend": "HOST_CODEX",
+      "review_action": "PATCH",
+      "final_review_action": null
+    },
+    {
+      "round": 3,
+      "chief_backend": "EXTERNAL_AGENT",
+      "review_action": "PATCH",
+      "final_review_action": null
+    },
+    {
+      "round": 4,
+      "chief_backend": "EXTERNAL_AGENT",
+      "review_action": "PATCH",
+      "final_review_action": null
+    },
+    {
+      "round": 5,
+      "chief_backend": "EXTERNAL_AGENT",
+      "review_action": "PASS",
+      "final_review_action": "PASS"
+    }
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "artifacts": [
+        "checkpoint.json",
+        "checkpoint_intent.json",
+        "codex-chief-review.ndjson",
+        "codex-chief-review.workspace.json",
+        "codex-chief-select.ndjson",
+        "codex-chief-select.workspace.json",
+        "external_chief_transport.json",
+        "machine_gate.json",
+        "review_decision.json",
+        "review_handoff.md",
+        "review_transition.json",
+        "review_transition_receipt.json",
+        "select_decision.json",
+        "select_handoff.md",
+        "select_transition.json",
+        "select_transition_receipt.json",
+        "worker.ndjson",
+        "worker_evidence.json",
+        "worker_output.json",
+        "worker_prompt.md"
+      ],
+      "base_sha": "ec1c99ecdaf1926fd3d4a1fa2475fa5e0ce7c1df",
+      "head_sha": "df552c9767917367e11dd98d51fb24438d557856",
+      "expected_tree_sha": "b55c0d048e36f10a3bbcf1da6f826bfb37bb283c",
+      "pushed": true,
+      "gate_required_passed": null,
+      "gate_policy_passed": true,
+      "gate_passed": true,
+      "review_action": "PATCH",
+      "final_review_action": null,
+      "chief_backend": "HOST_CODEX"
+    },
+    {
+      "round": 2,
+      "artifacts": [
+        "checkpoint.json",
+        "checkpoint_intent.json",
+        "codex-chief-review.ndjson",
+        "codex-chief-review.workspace.json",
+        "external_chief_transport.json",
+        "machine_gate.json",
+        "review_decision.json",
+        "review_handoff.md",
+        "review_transition.json",
+        "review_transition_receipt.json",
+        "worker.ndjson",
+        "worker_evidence.json",
+        "worker_output.json",
+        "worker_prompt.md"
+      ],
+      "base_sha": "df552c9767917367e11dd98d51fb24438d557856",
+      "head_sha": "67e95123749b7c9ee3bea3310ec637c419fa680e",
+      "expected_tree_sha": "71e76b9ef2976e9f3167748671ea8de8c784df44",
+      "pushed": true,
+      "gate_required_passed": null,
+      "gate_policy_passed": true,
+      "gate_passed": true,
+      "review_action": "PATCH",
+      "final_review_action": null,
+      "chief_backend": "HOST_CODEX"
+    },
+    {
+      "round": 3,
+      "artifacts": [
+        "checkpoint.json",
+        "checkpoint_intent.json",
+        "external_chief_transport.json",
+        "machine_gate.json",
+        "review_decision.json",
+        "review_handoff.md",
+        "review_transition.json",
+        "review_transition_receipt.json",
+        "worker_evidence.json",
+        "worker_output.json",
+        "worker_prompt.md"
+      ],
+      "base_sha": "67e95123749b7c9ee3bea3310ec637c419fa680e",
+      "head_sha": "a78109b5558695ffd8bcfbc97c58216ad17acabe",
+      "expected_tree_sha": "58754591a0f3f09b64a3a3be53b3db017e7d80aa",
+      "pushed": true,
+      "gate_required_passed": null,
+      "gate_policy_passed": true,
+      "gate_passed": false,
+      "review_action": "PATCH",
+      "final_review_action": null,
+      "chief_backend": "EXTERNAL_AGENT"
+    },
+    {
+      "round": 4,
+      "artifacts": [
+        "checkpoint.json",
+        "checkpoint_intent.json",
+        "external_chief_transport.json",
+        "machine_gate.json",
+        "review_decision.json",
+        "review_handoff.md",
+        "review_transition.json",
+        "review_transition_receipt.json",
+        "worker_evidence.json",
+        "worker_output.json",
+        "worker_prompt.md"
+      ],
+      "base_sha": "a78109b5558695ffd8bcfbc97c58216ad17acabe",
+      "head_sha": "46e35aaf296b84278d0719708780c3e9de3464a2",
+      "expected_tree_sha": "a4a68ba65958b79a8bb50cfce8c4a8ebff875513",
+      "pushed": true,
+      "gate_required_passed": null,
+      "gate_policy_passed": true,
+      "gate_passed": false,
+      "review_action": "PATCH",
+      "final_review_action": null,
+      "chief_backend": "EXTERNAL_AGENT"
+    },
+    {
+      "round": 5,
+      "artifacts": [
+        "checkpoint.json",
+        "checkpoint_intent.json",
+        "external_chief_transport.json",
+        "final_review_decision.json",
+        "final_review_handoff.md",
+        "final_review_transition.json",
+        "final_review_transition_receipt.json",
+        "integration_uat.json",
+        "machine_gate.json",
+        "review_decision.json",
+        "review_handoff.md",
+        "review_transition.json",
+        "review_transition_receipt.json",
+        "worker_evidence.json",
+        "worker_output.json",
+        "worker_prompt.md"
+      ],
+      "base_sha": "46e35aaf296b84278d0719708780c3e9de3464a2",
+      "head_sha": "a115f1b6ec6f8561fbc8272fb8540ab9f2639116",
+      "expected_tree_sha": "bb6dc2d21d63fbc0bf13dd5a8f2cb2d7e3978953",
+      "pushed": true,
+      "gate_required_passed": null,
+      "gate_policy_passed": true,
+      "gate_passed": true,
+      "review_action": "PASS",
+      "final_review_action": "PASS",
+      "chief_backend": "EXTERNAL_AGENT"
+    }
+  ],
+  "historical_rounds_unchanged": [
+    {
+      "round": 1,
+      "file_count": 20,
+      "aggregate_hash_before": "e920e57a31d57d00b1836d796b40c752602cdcde18346bf3262b21026c05ee42",
+      "aggregate_hash_after": "e920e57a31d57d00b1836d796b40c752602cdcde18346bf3262b21026c05ee42",
+      "unchanged": true
+    },
+    {
+      "round": 2,
+      "file_count": 14,
+      "aggregate_hash_before": "e74edaa5aa5bf20942fa0004a12f3d1c642166167575a26db6c906c311d49c54",
+      "aggregate_hash_after": "e74edaa5aa5bf20942fa0004a12f3d1c642166167575a26db6c906c311d49c54",
+      "unchanged": true
+    },
+    {
+      "round": 3,
+      "file_count": 11,
+      "aggregate_hash_before": "8d253309bbc35b199d74c0a3c88eb693c8bb875dc4f216297a6eaf8e184f985d",
+      "aggregate_hash_after": "8d253309bbc35b199d74c0a3c88eb693c8bb875dc4f216297a6eaf8e184f985d",
+      "unchanged": true
+    },
+    {
+      "round": 4,
+      "file_count": 11,
+      "aggregate_hash_before": "b48877f97109a519c8a17fc73c0bd0330b44ba4dedf6302ae0d3c9c5c7e8bdcf",
+      "aggregate_hash_after": "b48877f97109a519c8a17fc73c0bd0330b44ba4dedf6302ae0d3c9c5c7e8bdcf",
+      "unchanged": true
+    }
+  ],
+  "backend_failover": {
+    "run_id": "dashboard-widget-real-20260916-r2",
+    "triggered_at_round": 2,
+    "phase": "CHIEF_REVIEW",
+    "task_id": "dashboard-android-widget-p0",
+    "original_backend": "HOST_CODEX",
+    "failure_class": "QUOTA_EXHAUSTED",
+    "failure_class_evidence": "operator_reported",
+    "durable_failure_signals": {
+      "chief_provider": "host_codex_fallback",
+      "selected_route": "HOST_CHIEF",
+      "external_warm_code": "EXTERNAL_NOT_CONFIGURED",
+      "external_recovery_attempted": false,
+      "host_attempt_duration_ms": 172336,
+      "waiting_for_chief_started_at": "2026-09-16T03:25:10.223Z",
+      "chief_wait_budget_exhausted": null
+    },
+    "selected_backend": "EXTERNAL_AGENT",
+    "same_run_id": true,
+    "same_phase": "CHIEF_REVIEW",
+    "same_task_id": "dashboard-android-widget-p0",
+    "takeover_rounds": [3, 4, 5],
+    "supervisor_spin": {
+      "restart_count": 231,
+      "event_count": 232,
+      "parked_phase": "WAITING_FOR_CHIEF",
+      "parked_status": "waiting"
+    }
+  }
+}
