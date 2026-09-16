@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "classification": "DETERMINISTIC_TESTED",
+  "scenarios": [
+    {
+      "name": "worker-boundary",
+      "controller_exit": { "code": null, "signal": "SIGKILL" },
+      "restart_count": 1,
+      "final_phase": "DONE"
+    },
+    {
+      "name": "chief-handoff-reply-boundary",
+      "controller_exit": { "code": null, "signal": "SIGKILL" },
+      "restart_count": 1,
+      "final_phase": "DONE"
+    },
+    {
+      "name": "gate-checkpoint-boundary",
+      "controller_exit": { "code": null, "signal": "SIGKILL" },
+      "restart_count": 1,
+      "final_phase": "DONE"
+    }
+  ],
+  "assertions": [
+    "same run_id and durable RUN_STATE were reused",
+    "unexpected controller exit triggered one automatic restart",
+    "terminal DONE state stopped the supervisor",
+    "no business rule or Agent decision was made by the supervisor"
+  ],
+  "test": "scripts/supervisor.test.mjs"
+}

@@ -37,3 +37,23 @@ This registry is a durable, reviewable record of behavior that must not disappea
 - regression tests: `scripts/human-boundary.test.mjs`, `scripts/chief-v3-autonomous-obligation-loop.test.mjs`, `scripts/chief-v3-recovery.test.mjs`.
 - integration fixture: `scripts/fixtures/payroll-human-boundary-20260916.json` (anonymized six-obligation shape; UAT-10 excludes AN).
 - known limitation: Payroll adapter wiring and a real user-answer/resume cycle still require live validation.
+
+## SUPERVISOR_RESTART_RESUME
+
+- status: `DETERMINISTIC_TESTED`; real long-running production UAT remains `NOT_YET_VERIFIED`.
+- required behaviors: start the existing controller, observe durable `RUN_STATE.json`, restart unexpected exits, stop on durable terminal state, and persist bounded restart telemetry in `SUPERVISOR_STATE.json`.
+- regression evidence: `scripts/supervisor.test.mjs` (three controlled SIGKILL/restart boundaries).
+- known limitation: the supervisor must itself be kept alive by the invoking shell/launch service; it is intentionally not a permanent OS daemon.
+
+## CHIEF_ROUTER_EXTERNAL_WARM_RECOVERY_HOST
+
+- status: `DETERMINISTIC_TESTED`; live 3–5 hour Dashboard loop remains `NOT_YET_VERIFIED`.
+- required behaviors: External Warm first, optional bounded External Recovery, Host fallback only after recovery failure, and durable route telemetry distinguishing preflight from real attempts.
+- regression evidence: `scripts/chief-router.test.mjs`.
+- known limitation: repo-native External Chief GUI transport is still `TECHNICAL_OPEN`; current proven Agent-mediated CUA route is not silently promoted.
+
+## DASHBOARD_PROJECT_ADAPTER_REAL_PRODUCT_LOOP
+
+- status: `REAL_UAT_VERIFIED` for frozen local Excel → normalized payload → responsive card runtime; long Ralph loop and Android widget remain `NOT_YET_VERIFIED`.
+- evidence: `/private/tmp/edu-ops-dashboard-ralph-run/DASHBOARD_CURRENT_STATE.md`, `/private/tmp/edu-ops-dashboard-ralph-run/DASHBOARD_OBLIGATIONS.json`, `/private/tmp/edu-ops-dashboard-ralph-run/artifacts/ralph-real-uat.json`.
+- source: `/Users/macos/Downloads/排课列表_08月31日到09月27日_202609131718.xls` (hash recorded in the evidence artifact).

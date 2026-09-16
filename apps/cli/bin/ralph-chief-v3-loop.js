@@ -24,6 +24,7 @@ import {
   externalChiefPreflight,
   runExternalChiefGuiRoundtrip,
 } from "./ralph-gui-chief-bridge.js";
+import { routeChiefCall } from "./ralph-chief-v3-router.js";
 
 function runStatePath(projectRoot, runId) {
   return join(getChiefRunDir(projectRoot, runId), "RUN_STATE.json");
@@ -204,48 +205,54 @@ export async function runV3BigLoop(options) {
       });
       return hostRun();
     }
-    const preflight = externalChiefPreflight(config.gui_bridge);
-    if (!preflight.ok) {
-      await recordChiefRouteTelemetry(projectRoot, runId, {
-        chief_provider: "host_codex_fallback",
-        [`${route}_external_preflight_failures`]: 1,
-        [`${route}_external_not_configured`]:
-          preflight.code === "EXTERNAL_NOT_CONFIGURED",
-        [`${route}_fallback_reason`]: preflight.code,
-        [`${route}_host_sol_fallbacks`]: 1,
-      });
-      return hostRun();
-    }
-    await recordChiefRouteTelemetry(projectRoot, runId, {
-      chief_provider: "external",
-      [`${route}_external_attempted`]: true,
-    });
     const startedAt = Date.now();
-    try {
-      const result = await externalRun();
-      await recordUsageLedger(projectRoot, {
-        timestamp: new Date().toISOString(),
-        role: "external_chief",
-        provider: "external",
-        model: null,
-        reasoning_effort: null,
-        phase: route.toUpperCase(),
-        run_id: runId,
-        round: externalRound,
-        duration: Date.now() - startedAt,
-        input_tokens: null,
-        cached_input_tokens: null,
-        output_tokens: null,
-        total_tokens: null,
-        tokens_available: false,
-        fallback_from: null,
-        failure_signature: null,
-      });
+    let routeRecord;
+    const routed = await routeChiefCall({
+      requestedRole: route,
+      warmPreflight: async () => externalChiefPreflight(config.gui_bridge),
+      recover: options.externalRecovery
+        ? async (preflight) =>
+            options.externalRecovery({
+              projectRoot,
+              runId,
+              route,
+              preflight,
+            })
+        : undefined,
+      external: async () => {
+        await recordChiefRouteTelemetry(projectRoot, runId, {
+          chief_provider: "external",
+          [`${route}_external_attempted`]: true,
+        });
+        return externalRun();
+      },
+      host: async (error) => {
+        const failure = error?.code ?? error?.message ?? null;
+        await recordChiefRouteTelemetry(projectRoot, runId, {
+          chief_provider: "host_codex_fallback",
+          [`${route}_fallback_reason`]: failure,
+          [`${route}_host_sol_fallbacks`]: 1,
+        });
+        return hostRun();
+      },
+      record: async (record) => {
+        routeRecord = record;
+        await recordChiefRouteTelemetry(projectRoot, runId, {
+          [`${route}_chief_route`]: record,
+          [`${route}_external_recovery_attempted`]:
+            record.external_recovery.attempted,
+          [`${route}_external_recovery_success`]:
+            record.external_recovery.success,
+          ...(record.failure_code ? { [`${route}_external_failures`]: 1 } : {}),
+        });
+      },
+    });
+    if (routeRecord?.selected_route?.startsWith("EXTERNAL")) {
       await recordChiefRouteTelemetry(projectRoot, runId, {
         [`${route}_external_successes`]: 1,
       });
-      return result;
-    } catch (error) {
+    }
+    if (routeRecord?.external_warm?.success || routeRecord?.failure_code) {
       await recordUsageLedger(projectRoot, {
         timestamp: new Date().toISOString(),
         role: "external_chief",
@@ -262,17 +269,10 @@ export async function runV3BigLoop(options) {
         total_tokens: null,
         tokens_available: false,
         fallback_from: null,
-        failure_signature: error?.code ?? "EXTERNAL_CHIEF_FAILURE",
+        failure_signature: routeRecord.failure_code,
       });
-      await recordChiefRouteTelemetry(projectRoot, runId, {
-        [`${route}_external_failures`]: 1,
-        [`${route}_fallback_reason`]:
-          error instanceof Error ? error.message : String(error),
-        [`${route}_host_sol_fallbacks`]: 1,
-        chief_provider: "host_codex_fallback",
-      });
-      return hostRun();
     }
+    return routed;
   };
   const loadState =
     options.loadState ?? (() => loadRunState(runStatePath(projectRoot, runId)));

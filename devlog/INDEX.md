@@ -8,3 +8,4 @@
 - 2026-09-15/006-model-economics — model-economics
 - 2026-09-15/007-durable-context-external-chief-recovery — durable context and External Chief recovery; 2026-08 Payroll real-UAT evidence (`payroll-real-uat-20260916.md`)
 - 2026-09-15/008-human-boundary — permanent Human Boundary, minimal escalation, durable responses, and policy scope
+- 2026-09-16/009-supervisor-dashboard — thin restart/resume supervisor, Chief routing, and Dashboard real-input bootstrap/UAT

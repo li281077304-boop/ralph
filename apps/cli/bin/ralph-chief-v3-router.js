@@ -1,0 +1,84 @@
+/**
+ * Deterministic External-first Chief routing.  This module deliberately knows
+ * nothing about Chief prompts or business decisions; it only chooses the
+ * prepared External route, bounded recovery, or the Host fallback and emits a
+ * durable, observable route record through the supplied callback.
+ */
+export async function routeChiefCall(options) {
+  const startedAt = Date.now();
+  const route = {
+    requested_role: options.requestedRole ?? "chief",
+    selected_route: null,
+    external_warm: { attempted: false, success: false },
+    external_recovery: { attempted: false, success: false },
+    host_fallback_reason: null,
+    final_chief_identity: null,
+    duration: null,
+    failure_code: null,
+  };
+  const persist = async (extra = {}) => {
+    route.duration = Date.now() - startedAt;
+    await options.record?.({ ...route, ...extra });
+  };
+  let preflight;
+  try {
+    preflight = await (options.warmPreflight?.() ?? { ok: true });
+  } catch (error) {
+    preflight = {
+      ok: false,
+      code: error?.code ?? "EXTERNAL_WARM_PREFLIGHT_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  route.external_warm.attempted = true;
+  route.external_warm.success = preflight.ok === true;
+  if (preflight.ok !== true) {
+    route.external_warm.code = preflight.code ?? "EXTERNAL_WARM_FAILED";
+    if (options.recover) {
+      route.external_recovery.attempted = true;
+      let recovered;
+      try {
+        recovered = await options.recover(preflight);
+      } catch (error) {
+        recovered = {
+          ok: false,
+          code: error?.code ?? "EXTERNAL_RECOVERY_FAILED",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+      route.external_recovery.success = recovered?.ok === true;
+      if (route.external_recovery.success) {
+        route.selected_route = "EXTERNAL_RECOVERY";
+      } else {
+        route.external_recovery.code =
+          recovered?.code ?? "EXTERNAL_RECOVERY_FAILED";
+      }
+    }
+    if (route.selected_route !== "EXTERNAL_RECOVERY") {
+      route.selected_route = "HOST_CHIEF";
+      route.host_fallback_reason =
+        route.external_recovery.code ?? route.external_warm.code;
+      route.final_chief_identity = "host";
+      const result = await options.host();
+      await persist({ result: "HOST_FALLBACK" });
+      return result;
+    }
+  } else {
+    route.selected_route = "EXTERNAL_WARM";
+  }
+  try {
+    const result = await options.external({ route });
+    route.final_chief_identity = "external";
+    await persist({ result: "EXTERNAL_SUCCESS" });
+    return result;
+  } catch (error) {
+    route.failure_code = error?.code ?? "EXTERNAL_CHIEF_FAILURE";
+    route.host_fallback_reason =
+      error instanceof Error ? error.message : String(error);
+    route.selected_route = "HOST_CHIEF";
+    route.final_chief_identity = "host";
+    const result = await options.host(error);
+    await persist({ result: "HOST_FALLBACK" });
+    return result;
+  }
+}
