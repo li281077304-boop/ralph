@@ -531,6 +531,7 @@ export async function runV3BigLoop(options) {
             devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "chief",
+            transportRole: "host_sol",
             transport: hostSolTransport("codex-chief-review.ndjson"),
           })
       ),
@@ -563,6 +564,7 @@ export async function runV3BigLoop(options) {
             devlogRoot: options.devlogRoot ?? projectRoot,
             guiConfig: config.gui_bridge,
             reviewStage: "final",
+            transportRole: "host_sol",
             transport: hostSolTransport("codex-chief-final-review.ndjson"),
           })
       ),
