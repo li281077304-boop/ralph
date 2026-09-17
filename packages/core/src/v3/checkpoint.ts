@@ -408,18 +408,20 @@ export async function runCheckpointPhase(options: {
  * the normal add path and therefore remain subject to Git's ignore policy.
  */
 function stageProductPaths(root: string, paths: string[]): void {
-  const tracked = paths.filter((path) => {
+  // Update every tracked file only after the gate/fingerprint equality check;
+  // this includes tracked files below ignored directories without asking Git
+  // to re-add the ignored directory itself.
+  git(root, ["add", "-u", "--", "."]);
+  const untracked = paths.filter((path) => {
     try {
       execFileSync("git", ["ls-files", "--error-unmatch", "--", path], {
         cwd: root,
         stdio: ["ignore", "ignore", "ignore"],
       });
-      return true;
-    } catch {
       return false;
+    } catch {
+      return true;
     }
   });
-  const untracked = paths.filter((path) => !tracked.includes(path));
-  if (tracked.length > 0) git(root, ["add", "-u", "--", ...tracked]);
   if (untracked.length > 0) git(root, ["add", "-A", "--", ...untracked]);
 }
