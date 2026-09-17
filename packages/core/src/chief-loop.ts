@@ -70,6 +70,7 @@ export type ChiefLoopConfig = {
   commands?: string[];
   uatCommands?: string[];
   forbiddenPaths?: string[];
+  allowedGeneratedPaths?: string[];
   requiredCleanPatterns?: string[];
   gateAllowedPaths?: string[];
   protectedPaths?: string[];
@@ -1084,6 +1085,7 @@ function normalizeConfig(
     | "commands"
     | "uatCommands"
     | "forbiddenPaths"
+    | "allowedGeneratedPaths"
     | "requiredCleanPatterns"
     | "gateAllowedPaths"
     | "protectedPaths"
@@ -1100,6 +1102,8 @@ function normalizeConfig(
     commands: input.commands ?? base.commands,
     uatCommands: input.uatCommands ?? base.uat_commands,
     forbiddenPaths: input.forbiddenPaths ?? base.forbidden_paths,
+    allowedGeneratedPaths:
+      input.allowedGeneratedPaths ?? base.allowed_generated_paths,
     requiredCleanPatterns:
       input.requiredCleanPatterns ?? base.required_clean_patterns,
     gateAllowedPaths: input.gateAllowedPaths ?? base.gate_allowed_paths,
@@ -1143,6 +1147,7 @@ function normalizeControls(
       ),
     ],
     forbiddenPaths: config.forbiddenPaths,
+    allowedGeneratedPaths: config.allowedGeneratedPaths,
     maxDiffBytes: config.maxDiffBytes,
     maxChangedPaths: config.maxChangedPaths,
   };

@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -243,6 +250,38 @@ test("Worker commit and protected/forbidden edits fail closed", async () => {
     });
     assert.equal(result.runState.phase, "FAILED");
   }
+});
+
+test("explicit generated-artifact exception is narrow and deterministic", async () => {
+  const f = await fixture();
+  const result = await runV3WorkSlice({
+    projectRoot: f.root,
+    runId: f.runId,
+    config: config({
+      forbidden_paths: ["*.xlsx"],
+      allowed_generated_paths: ["reports/generated.xlsx"],
+    }),
+    runAgent: async () => {
+      await mkdir(join(f.root, "reports"), { recursive: true });
+      await writeFile(join(f.root, "reports/generated.xlsx"), "generated\n");
+      return { text: "done", meta: {} };
+    },
+  });
+  assert.notEqual(result.runState.phase, "FAILED");
+  const second = await fixture();
+  const blocked = await runV3WorkSlice({
+    projectRoot: second.root,
+    runId: second.runId,
+    config: config({
+      forbidden_paths: ["*.xlsx"],
+      allowed_generated_paths: ["reports/generated.xlsx"],
+    }),
+    runAgent: async () => {
+      await writeFile(join(second.root, "other.xlsx"), "not allowed\n");
+      return { text: "done", meta: {} };
+    },
+  });
+  assert.equal(blocked.runState.phase, "FAILED");
 });
 
 test("Machine Gate required command failure never reaches checkpoint", async () => {

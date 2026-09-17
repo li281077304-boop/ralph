@@ -31,6 +31,8 @@ export type ChiefConfig = {
   commands: string[];
   uat_commands: string[];
   forbidden_paths: string[];
+  /** Explicit, narrow exceptions for deterministic generated product artifacts. */
+  allowed_generated_paths: string[];
   required_clean_patterns: string[];
   gate_allowed_paths: string[];
   protected_paths: string[];
@@ -54,6 +56,7 @@ const DEFAULT_CONFIG: ChiefConfig = {
   // never enter an automated coding diff unless a future policy explicitly
   // changes this boundary.
   forbidden_paths: ["real_data/", "*.xlsx", "*.xls"],
+  allowed_generated_paths: [],
   required_clean_patterns: [],
   gate_allowed_paths: [],
   protected_paths: [
@@ -270,6 +273,10 @@ export function loadChiefConfig(path?: string): ChiefConfig {
       ...strings(parsed.forbidden_paths, "forbidden_paths"),
     ]),
   ];
+  config.allowed_generated_paths = strings(
+    parsed.allowed_generated_paths,
+    "allowed_generated_paths"
+  );
   config.required_clean_patterns = strings(
     parsed.required_clean_patterns,
     "required_clean_patterns"

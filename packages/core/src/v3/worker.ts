@@ -46,6 +46,7 @@ export type V3WorkerConfig = {
     mode?: "stage" | "native_goal";
   };
   forbidden_paths?: string[];
+  allowed_generated_paths?: string[];
   protected_paths?: string[];
   max_diff_bytes?: number;
   max_changed_paths?: number;
@@ -263,6 +264,7 @@ function controls(config: V3WorkerConfig) {
   return {
     protectedPaths: config.protected_paths ?? [],
     forbiddenPaths: config.forbidden_paths ?? [],
+    allowedGeneratedPaths: config.allowed_generated_paths ?? [],
     maxDiffBytes: config.max_diff_bytes,
     maxChangedPaths: config.max_changed_paths,
   };

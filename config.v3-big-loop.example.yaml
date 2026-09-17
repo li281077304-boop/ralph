@@ -30,3 +30,9 @@ gui_bridge:
 # No max_total_tokens: omitted means no Ralph token-budget cap.
 # Keep the existing commands, protected_paths, forbidden_paths, and
 # gate_allowed_paths for the target repository.
+# If a product pipeline intentionally regenerates a normally-forbidden
+# spreadsheet, list only its deterministic output paths here.  This does not
+# weaken the default *.xlsx/*.xls guard for arbitrary files.
+# allowed_generated_paths:
+#   - data/processed/production/weekly_report_*.xlsx
+#   - data/processed/production/weekly_report_snapshot.json

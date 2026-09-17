@@ -6,6 +6,8 @@ import { isAbsolute, join, relative } from "node:path";
 export type AcceptanceControls = {
   protectedPaths?: string[];
   forbiddenPaths?: string[];
+  /** Narrow exceptions for generated product artifacts otherwise covered by a forbidden pattern. */
+  allowedGeneratedPaths?: string[];
   /** Optional per-stage growth limit for an unexpected patch. */
   maxDiffBytes?: number;
   /** Optional per-stage changed-path limit for an unexpected patch. */
@@ -124,7 +126,10 @@ export class GitGuard {
     }
     for (const path of changed) {
       if (protectedSet.has(path)) violations.push({ kind: "protected", path });
-      else if (matchesAny(path, forbidden))
+      else if (
+        matchesAny(path, forbidden) &&
+        !matchesAny(path, this.controls.allowedGeneratedPaths ?? [])
+      )
         violations.push({ kind: "forbidden", path });
     }
     return violations;
