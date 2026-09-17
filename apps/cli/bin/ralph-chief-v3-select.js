@@ -246,7 +246,7 @@ export async function runV3SelectTransport(options) {
       const repairRequest = {
         ...request,
         identity: `${request.identity}-schema-repair`,
-        message: `${request.message}\n\n协议修正：next_worker_task 必须是对象（包含 objective、technical_direction、avoid_previous_routes、acceptance、evidence_to_check），不能是 task id 字符串。请仅重新输出同一绑定的完整机器区块。`,
+        message: `${request.message}\n\n协议修正：严格遵守 Schema。对于 CONTINUE_DEVELOPMENT，next_worker_task 必须为 null；不要把 task id 字符串放入该字段。若确实需要改写任务，必须使用对象：{ "objective": "...", "technical_direction": "...", "avoid_previous_routes": ["..."], "acceptance": ["..."], "evidence_to_check": ["..."] }，其中后三个字段始终是字符串数组。请仅重新输出同一绑定的完整机器区块。`,
       };
       result = await transport(repairRequest);
       if (!result || typeof result.reply !== "string")

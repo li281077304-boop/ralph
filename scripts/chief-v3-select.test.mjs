@@ -156,7 +156,7 @@ test("invalid next_worker_task gets one bounded schema correction request", asyn
   });
   assert.equal(result.runState.phase, "WORKER");
   assert.equal(calls.length, 2);
-  assert.match(calls[1].message, /next_worker_task 必须是对象/);
+  assert.match(calls[1].message, /next_worker_task 必须为 null/);
   assert.match(calls[1].identity, /schema-repair$/);
 });
 
