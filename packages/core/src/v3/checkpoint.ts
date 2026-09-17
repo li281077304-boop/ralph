@@ -338,8 +338,7 @@ export async function runCheckpointPhase(options: {
     // disk but is intentionally never part of a product checkpoint commit.
     const productPaths = changedPaths(root);
     git(root, ["reset", "--", "."]);
-    if (productPaths.length > 0)
-      git(root, ["add", "-A", "--", ...productPaths]);
+    if (productPaths.length > 0) stageProductPaths(root, productPaths);
     if (git(root, ["write-tree"]) !== String(intent.expected_tree_sha))
       throw new Error("staged tree does not match the checkpoint intent");
     const paths = changedPaths(root);
@@ -399,4 +398,28 @@ export async function runCheckpointPhase(options: {
   };
   await saveRunState(runPath, next);
   return { runState: next, checkpoint };
+}
+
+/**
+ * Stage only product-owned paths while tolerating tracked generated artifacts
+ * that live below an ignored directory.  `git add -A -- <path>` rejects such
+ * paths even when they are already tracked; `git add -u` updates those files
+ * without widening the checkpoint scope.  Truly new product files still use
+ * the normal add path and therefore remain subject to Git's ignore policy.
+ */
+function stageProductPaths(root: string, paths: string[]): void {
+  const tracked = paths.filter((path) => {
+    try {
+      execFileSync("git", ["ls-files", "--error-unmatch", "--", path], {
+        cwd: root,
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const untracked = paths.filter((path) => !tracked.includes(path));
+  if (tracked.length > 0) git(root, ["add", "-u", "--", ...tracked]);
+  if (untracked.length > 0) git(root, ["add", "-A", "--", ...untracked]);
 }
