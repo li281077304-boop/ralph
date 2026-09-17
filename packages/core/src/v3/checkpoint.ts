@@ -423,5 +423,8 @@ function stageProductPaths(root: string, paths: string[]): void {
       return true;
     }
   });
-  if (untracked.length > 0) git(root, ["add", "-A", "--", ...untracked]);
+  // New files are staged one-by-one.  The path list has already been derived
+  // from the gated product diff, so `-f` is safe for an explicitly allowed
+  // generated artifact that is intentionally ignored by repository policy.
+  for (const path of untracked) git(root, ["add", "-f", "--", path]);
 }
