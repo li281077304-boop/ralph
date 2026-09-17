@@ -137,7 +137,7 @@ async function expectedTreeSha(
   try {
     gitWithEnv(root, ["read-tree", baseSha], env);
     if (productPaths.length > 0)
-      gitWithEnv(root, ["add", "-A", "--", ...productPaths], env);
+      stageProductPathsWithEnv(root, productPaths, env);
     return gitWithEnv(root, ["write-tree"], env);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -411,11 +411,32 @@ function stageProductPaths(root: string, paths: string[]): void {
   // Update every tracked file only after the gate/fingerprint equality check;
   // this includes tracked files below ignored directories without asking Git
   // to re-add the ignored directory itself.
-  git(root, ["add", "-u", "--", "."]);
+  stageProductPathsWithEnv(root, paths);
+}
+
+function stageProductPathsWithEnv(
+  root: string,
+  paths: string[],
+  env?: NodeJS.ProcessEnv
+): void {
+  const stage = (args: string[]): void => {
+    if (env) {
+      const normalizedEnv = Object.fromEntries(
+        Object.entries(env).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string"
+        )
+      );
+      gitWithEnv(root, args, normalizedEnv);
+    } else {
+      git(root, args);
+    }
+  };
+  stage(["add", "-u", "--", "."]);
   const untracked = paths.filter((path) => {
     try {
       execFileSync("git", ["ls-files", "--error-unmatch", "--", path], {
         cwd: root,
+        env: env ? { ...process.env, ...env } : process.env,
         stdio: ["ignore", "ignore", "ignore"],
       });
       return false;
@@ -426,5 +447,5 @@ function stageProductPaths(root: string, paths: string[]): void {
   // New files are staged one-by-one.  The path list has already been derived
   // from the gated product diff, so `-f` is safe for an explicitly allowed
   // generated artifact that is intentionally ignored by repository policy.
-  for (const path of untracked) git(root, ["add", "-f", "--", path]);
+  for (const path of untracked) stage(["add", "-f", "--", path]);
 }
