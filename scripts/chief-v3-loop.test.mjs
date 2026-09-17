@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { runV3BigLoop } from "../apps/cli/bin/ralph-chief-v3-loop.js";
+import {
+  resolveChiefStrategy,
+  runV3BigLoop,
+} from "../apps/cli/bin/ralph-chief-v3-loop.js";
 import { loadExtensionEnv } from "../apps/cli/bin/ralph-gui-chief-bridge.js";
 
 function harness(initial, maxIterations = 8) {
@@ -96,6 +99,17 @@ test("production default resolves and records External-first strategy", async ()
   );
   assert.equal(strategy.resolved_chief_strategy, "EXTERNAL_FIRST");
   assert.equal(strategy.direct_host_override, false);
+});
+
+test("production config resolves Host Sol High as the default primary route", () => {
+  const strategy = resolveChiefStrategy({
+    chief_mode: "external",
+    chief_primary: "host_sol",
+  });
+  assert.equal(strategy.resolved_chief_strategy, "HOST_SOL_FIRST");
+  assert.equal(strategy.external_warm_enabled, true);
+  assert.equal(strategy.external_recovery_enabled, true);
+  assert.equal(strategy.host_fallback_enabled, false);
 });
 
 test("PASS flow routes Review PASS to the next SELECT", async () => {

@@ -1,6 +1,8 @@
 # Economical V3 autonomous single-task loop.
 # External Chief is the primary decision route; Host Sol is a fallback.
 chief_mode: external
+# Production decision route: Host Sol High first; External is fallback.
+chief_primary: host_sol
 max_iterations: 8
 timeout_seconds: 1800
 

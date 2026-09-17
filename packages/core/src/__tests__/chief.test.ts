@@ -195,6 +195,7 @@ describe("Chief machine gate and Git Guard", () => {
     );
     const config = loadChiefConfig(path);
     expect(config.chief_mode).toBe("external");
+    expect(config.chief_primary).toBe("host_sol");
     expect(config.max_iterations).toBe(4);
     expect(config.max_diff_bytes).toBe(42);
     expect(config.chief).toMatchObject({

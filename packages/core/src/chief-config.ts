@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import type { AgentName } from "./agents/index.js";
 
 export type ChiefMode = "codex" | "external";
+export type ChiefPrimary = "host_sol" | "external";
 
 export type ChiefAgentConfig = {
   agent: AgentName;
@@ -22,6 +23,8 @@ export type ChiefGuiBridgeConfig = {
 
 export type ChiefConfig = {
   chief_mode: ChiefMode;
+  /** Production decision route. `host_sol` is the economical, deterministic default. */
+  chief_primary: ChiefPrimary;
   max_iterations: number;
   max_total_tokens?: number;
   timeout_seconds: number;
@@ -39,9 +42,10 @@ export type ChiefConfig = {
 };
 
 const DEFAULT_CONFIG: ChiefConfig = {
-  // External Chief is the default decision route. Host Codex Sol is used only
-  // by the V3 router as a deterministic fallback/escalation path.
+  // Host Sol High is the default production decision route. External remains
+  // an explicitly observable fallback route for prepared GUI environments.
   chief_mode: "external",
+  chief_primary: "host_sol",
   max_iterations: 6,
   timeout_seconds: 1800,
   commands: [],
@@ -233,6 +237,14 @@ export function loadChiefConfig(path?: string): ChiefConfig {
     if (parsed.chief_mode !== "codex" && parsed.chief_mode !== "external")
       throw new Error("chief_mode must be codex or external");
     config.chief_mode = parsed.chief_mode;
+  }
+  if (parsed.chief_primary !== undefined) {
+    if (
+      parsed.chief_primary !== "host_sol" &&
+      parsed.chief_primary !== "external"
+    )
+      throw new Error("chief_primary must be host_sol or external");
+    config.chief_primary = parsed.chief_primary;
   }
   config.max_iterations = positiveInt(
     parsed.max_iterations,

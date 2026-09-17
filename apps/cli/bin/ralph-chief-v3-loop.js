@@ -179,6 +179,16 @@ export function resolveChiefStrategy(config, options = {}) {
         options.cliChiefMode === "codex" ? "cli" : "explicit_option",
     };
   }
+  if (config.chief_primary === "host_sol") {
+    return {
+      resolved_chief_strategy: "HOST_SOL_FIRST",
+      external_warm_enabled: true,
+      external_recovery_enabled: true,
+      host_fallback_enabled: false,
+      direct_host_override: false,
+      override_source: null,
+    };
+  }
   return {
     resolved_chief_strategy: "EXTERNAL_FIRST",
     external_warm_enabled: true,
@@ -276,6 +286,119 @@ export async function runV3BigLoop(options) {
         [`${route}_host_sol_used`]: true,
       });
       return hostRun();
+    }
+    const hostSolPrimary = config.chief_primary === "host_sol";
+    const invokeExternalFallback = async () => {
+      const startedAt = Date.now();
+      let routeRecord;
+      const routed = await routeChiefCall({
+        requestedRole: route,
+        warmPreflight: async () => externalChiefPreflight(config.gui_bridge),
+        recover: async (failure, context = {}) => {
+          if (options.externalRecovery)
+            return options.externalRecovery({
+              projectRoot,
+              runId,
+              route,
+              failure,
+              ...context,
+            });
+          await recordChiefRouteTelemetry(projectRoot, runId, {
+            [`${route}_external_recovery_attempted`]: true,
+            [`${route}_external_recovery_transport`]:
+              "TEMPORARY_PROVEN_EXTERNAL_RECOVERY",
+            [`${route}_external_recovery_reason`]:
+              failure?.code ?? failure?.message ?? String(failure),
+          });
+          return {
+            ok: true,
+            transport: "TEMPORARY_PROVEN_EXTERNAL_RECOVERY",
+          };
+        },
+        external: async () => {
+          await recordChiefRouteTelemetry(projectRoot, runId, {
+            chief_provider: "external",
+            [`${route}_external_attempted`]: true,
+          });
+          return externalRun();
+        },
+        host: async (error) => {
+          const failure = error?.code ?? error?.message ?? null;
+          await recordChiefRouteTelemetry(projectRoot, runId, {
+            chief_provider: "host_sol_high",
+            [`${route}_fallback_reason`]: failure,
+            [`${route}_host_sol_fallbacks`]: hostSolPrimary ? 0 : 1,
+          });
+          return hostSolPrimary
+            ? Promise.reject(
+                Object.assign(
+                  new Error("HOST_SOL_PRIMARY_AND_EXTERNAL_FALLBACK_EXHAUSTED"),
+                  { code: "HOST_SOL_PRIMARY_AND_EXTERNAL_FALLBACK_EXHAUSTED" }
+                )
+              )
+            : hostRun();
+        },
+        record: async (record) => {
+          routeRecord = record;
+          await recordChiefRouteTelemetry(projectRoot, runId, {
+            [`${route}_chief_route`]: record,
+            [`${route}_external_recovery_attempted`]:
+              record.external_recovery.attempted,
+            [`${route}_external_recovery_success`]:
+              record.external_recovery.success,
+            ...(record.failure_code
+              ? { [`${route}_external_failures`]: 1 }
+              : {}),
+          });
+        },
+      });
+      if (routeRecord?.selected_route?.startsWith("EXTERNAL")) {
+        await recordChiefRouteTelemetry(projectRoot, runId, {
+          [`${route}_external_successes`]: 1,
+        });
+      }
+      if (routeRecord?.external_warm?.success || routeRecord?.failure_code) {
+        await recordUsageLedger(projectRoot, {
+          timestamp: new Date().toISOString(),
+          role: "external_chief",
+          provider: "external",
+          model: null,
+          reasoning_effort: null,
+          phase: route.toUpperCase(),
+          run_id: runId,
+          round: externalRound,
+          duration: Date.now() - startedAt,
+          input_tokens: null,
+          cached_input_tokens: null,
+          output_tokens: null,
+          total_tokens: null,
+          tokens_available: false,
+          fallback_from: null,
+          failure_signature: routeRecord.failure_code,
+        });
+      }
+      return routed;
+    };
+    if (hostSolPrimary) {
+      await recordChiefRouteTelemetry(projectRoot, runId, {
+        chief_provider: "host_sol_high",
+        [`${route}_host_sol_primary_attempted`]: true,
+      });
+      try {
+        const result = await hostRun();
+        await recordChiefRouteTelemetry(projectRoot, runId, {
+          chief_provider: "host_sol_high",
+          [`${route}_host_sol_primary_successes`]: 1,
+        });
+        return result;
+      } catch (error) {
+        await recordChiefRouteTelemetry(projectRoot, runId, {
+          [`${route}_host_sol_primary_failures`]: 1,
+          [`${route}_host_sol_primary_failure_code`]:
+            error?.code ?? error?.message ?? String(error),
+        });
+        return invokeExternalFallback();
+      }
     }
     const startedAt = Date.now();
     let routeRecord;
