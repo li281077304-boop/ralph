@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +15,26 @@ import {
 import { detachAndExit } from "./detach.js";
 import { runLoop } from "./loop.js";
 import type { Stage } from "./stages.js";
+import { RUN_MODE_ENV_VAR, resolveRunMode } from "./v4/run-mode.js";
+
+/**
+ * The task text a run may carry its `RUN_MODE` declaration in: the inputs
+ * string itself (a task can be handed inline) plus the contents of any
+ * plan/PRD file it names.
+ */
+function collectRunModeInputs(inputs: string): string {
+  const parts = [inputs];
+  for (const candidate of inputs.split(/\s+/)) {
+    if (!candidate) continue;
+    try {
+      if (existsSync(candidate)) parts.push(readFileSync(candidate, "utf8"));
+    } catch {
+      // Unreadable path: the mode simply stays undeclared. V4 is opt-in, so a
+      // failure to find the declaration must fall back to V3, never guess.
+    }
+  }
+  return parts.join("\n");
+}
 
 export type RunBinConfig = {
   /** Bin name for usage/version/config output (e.g. "ralph-afk"). */
@@ -103,8 +124,14 @@ export async function runBin(argv: string[], cfg: RunBinConfig): Promise<void> {
     });
   }
 
+  const runMode = resolveRunMode({
+    env: process.env[RUN_MODE_ENV_VAR],
+    inputs: collectRunModeInputs(inputs ?? ""),
+  });
+
   await runLoop({
     stages: cfg.stages,
+    runMode,
     inputs: inputs ?? "",
     iterations,
     ralphDir,

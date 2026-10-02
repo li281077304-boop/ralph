@@ -1,3 +1,7 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const runLoopMock = vi.hoisted(() => vi.fn());
@@ -23,6 +27,7 @@ function config(takesInputArg: boolean): RunBinConfig {
 afterEach(() => {
   runLoopMock.mockReset();
   delete process.env.RALPH_AGENT;
+  delete process.env.RALPH_RUN_MODE;
 });
 
 describe("runBin agent forwarding", () => {
@@ -71,5 +76,39 @@ describe("runBin agent forwarding", () => {
       "--codex-user-config requires Codex; select it with --agent codex or RALPH_AGENT=codex"
     );
     expect(runLoopMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("runBin run-mode forwarding", () => {
+  it("defaults to RALPH_V3 on the legacy path", async () => {
+    await runBin(["plan.md", "1"], config(true));
+    expect(runLoopMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runMode: "RALPH_V3" })
+    );
+  });
+
+  it("forwards RALPH_RUN_MODE from the environment", async () => {
+    process.env.RALPH_RUN_MODE = "RALPH_V4";
+    await runBin(["plan.md", "1"], config(true));
+    expect(runLoopMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runMode: "RALPH_V4" })
+    );
+  });
+
+  it("reads an inline RUN_MODE declaration from the task input", async () => {
+    await runBin(["RUN_MODE: RALPH_V4", "1"], config(true));
+    expect(runLoopMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runMode: "RALPH_V4" })
+    );
+  });
+
+  it("reads the declaration from a plan file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ralph-runmode-"));
+    const plan = join(dir, "plan.md");
+    await writeFile(plan, "# Plan\n\nRUN_MODE: RALPH_V4\n", "utf8");
+    await runBin([plan, "1"], config(true));
+    expect(runLoopMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runMode: "RALPH_V4" })
+    );
   });
 });

@@ -39,6 +39,12 @@ import {
   SYM_OUT,
 } from "./stream-render.js";
 import type { Stage } from "./stages.js";
+import {
+  DEFAULT_RUN_MODE,
+  describeV4Capabilities,
+  resolveV4Capabilities,
+  type RunMode,
+} from "./v4/run-mode.js";
 
 // The agent emits this literal when there is no more work; the same string is
 // mirrored in the playbook templates (prompt.md / ghprompt.md) that instruct it.
@@ -153,6 +159,12 @@ export type LoopOptions = {
   agent?: AgentName;
   /** When true, Codex loads ~/.codex/config.toml. Default: false. */
   codexUserConfig?: boolean;
+  /**
+   * Orchestration rule set. Defaults to RALPH_V3 so every existing caller keeps
+   * its behaviour untouched; RALPH_V4 additionally activates the Product Anchor,
+   * Product Gate, P0 stop-loss and the V4 chief contract.
+   */
+  runMode?: RunMode;
 };
 
 export async function runLoop(opts: LoopOptions): Promise<void> {
@@ -170,6 +182,7 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
     cliVersion = "?",
     agent = "claude",
     codexUserConfig = false,
+    runMode = DEFAULT_RUN_MODE,
   } = opts;
 
   if (codexUserConfig && agent !== "codex") {
@@ -180,6 +193,13 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
   process.stderr.write(
     `${USE_COLOR ? `${dim("━━━")} ${bold(versionLine)} ${dim("━━━")}` : `== ${versionLine} ==`}\n`
   );
+
+  // V4 is opt-in: announce the rule set that actually activated so an operator
+  // can tell a V4 run from a V3 one in the log rather than inferring it.
+  if (runMode !== DEFAULT_RUN_MODE) {
+    const activation = describeV4Capabilities(resolveV4Capabilities(runMode));
+    process.stderr.write(`${USE_COLOR ? dim(activation) : activation}\n`);
+  }
 
   const releaser: Releaser = noKeepAlive
     ? { release: () => {} }

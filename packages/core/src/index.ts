@@ -429,3 +429,16 @@ export {
   type V4ChiefEvidence,
   type V4ChiefOutcome,
 } from "./v4/chief.js";
+export {
+  RUN_MODES,
+  DEFAULT_RUN_MODE,
+  RUN_MODE_ENV_VAR,
+  isRunMode,
+  parseRunMode,
+  resolveRunMode,
+  resolveV4Capabilities,
+  describeV4Capabilities,
+  type RunMode,
+  type ResolveRunModeInput,
+  type V4Capabilities,
+} from "./v4/run-mode.js";
