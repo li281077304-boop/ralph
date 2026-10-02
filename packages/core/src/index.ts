@@ -416,3 +416,16 @@ export {
   type V4RoundInput,
   type V4RoundDecision,
 } from "./v4/supervisor.js";
+export {
+  V4_CHIEF_VERDICTS,
+  V4_CHIEF_DIMENSIONS,
+  parseV4ChiefDecision,
+  renderV4ChiefEvidence,
+  evaluateV4ChiefOutcome,
+  type V4ChiefVerdict,
+  type V4ChiefDimension,
+  type V4ChiefJudgement,
+  type V4ChiefDecision,
+  type V4ChiefEvidence,
+  type V4ChiefOutcome,
+} from "./v4/chief.js";
