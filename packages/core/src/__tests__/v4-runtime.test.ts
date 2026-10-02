@@ -88,6 +88,30 @@ describe("product gate payload parsing", () => {
   ])("rejects %s", (_label, text) => {
     expect(parseProductGatePayload(text)).toBeUndefined();
   });
+
+  // An unrecognised outcome must not be silently read as "not failing".
+  it.each([
+    [
+      "unknown check outcome",
+      { id: "x", severity: "error", outcome: "ERROR" },
+    ],
+    ["unknown severity", { id: "x", severity: "critical", outcome: "PASS" }],
+    ["check without an id", { severity: "error", outcome: "PASS" }],
+  ])("rejects a malformed check: %s", (_label, check) => {
+    const payload = {
+      ...PASS_PAYLOAD,
+      evidence: { ...PASS_PAYLOAD.evidence, checks: [check] },
+    };
+    expect(parseProductGatePayload(JSON.stringify(payload))).toBeUndefined();
+  });
+
+  it("rejects an unknown inspection author", () => {
+    const payload = {
+      ...PASS_PAYLOAD,
+      evidence: { ...PASS_PAYLOAD.evidence, inspected_by: "robot" },
+    };
+    expect(parseProductGatePayload(JSON.stringify(payload))).toBeUndefined();
+  });
 });
 
 describe("product gate command", () => {
@@ -203,5 +227,59 @@ describe("V4 round runtime", () => {
       { round: 1, sha: "sha1", machineGate: "PASS" }
     );
     expect(outcome.anchor.user_value_delta).toContain("student edition");
+  });
+
+  // Regression 5, reached from the runtime rather than only from the policy.
+  it("voids a round whose source is a generated output", async () => {
+    const payload = {
+      evidence: {
+        ...PASS_PAYLOAD.evidence,
+        provenance: {
+          filename: "handout.docx",
+          sha256: "f".repeat(64),
+          origin: "GENERATED_OUTPUT",
+          job_id: "job-1",
+          attempt: 1,
+        },
+      },
+      issues: [],
+    };
+    const outcome = await runV4Round(
+      {
+        workspaceDir: root,
+        runId: "r1",
+        productGateCommand: await gateCommand(payload),
+      },
+      { round: 1, sha: "sha1", machineGate: "PASS" }
+    );
+    expect(outcome.productGate.outcome).toBe("BLOCKED");
+    expect(
+      outcome.productGate.issues.map((issue) => issue.summary).join(" ")
+    ).toContain("UAT_INPUT_INVALID");
+  });
+
+  it("accepts an original source", async () => {
+    const payload = {
+      evidence: {
+        ...PASS_PAYLOAD.evidence,
+        provenance: {
+          filename: "unit-04.docx",
+          sha256: "a".repeat(64),
+          origin: "ORIGINAL_SOURCE",
+          job_id: "job-1",
+          attempt: 1,
+        },
+      },
+      issues: [],
+    };
+    const outcome = await runV4Round(
+      {
+        workspaceDir: root,
+        runId: "r1",
+        productGateCommand: await gateCommand(payload),
+      },
+      { round: 1, sha: "sha1", machineGate: "PASS" }
+    );
+    expect(outcome.productGate.outcome).toBe("PASS");
   });
 });

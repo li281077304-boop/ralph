@@ -118,6 +118,9 @@ describe("V4 capabilities", () => {
       "V4 chief contract",
     ])
       expect(described).toContain(name);
+    // The log must separate what the loop enforces from what it merely offers.
+    expect(described).toContain("enforced by the loop");
+    expect(described).toContain("available for the chief flow");
   });
 
   it("keeps V3 and V4 describable apart in the log", () => {

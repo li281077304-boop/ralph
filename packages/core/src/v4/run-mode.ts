@@ -97,15 +97,20 @@ export function resolveV4Capabilities(runMode: RunMode): V4Capabilities {
   };
 }
 
-/** One line an operator can see in the log to confirm what actually activated. */
+/**
+ * One line an operator can see in the log to confirm what actually activated.
+ *
+ * It distinguishes what this loop *enforces* from what V4 merely *makes
+ * available*: the afk loop has no chief stage, so the three-judgement chief
+ * contract is consumed by the chief flow, not here. Saying otherwise would
+ * advertise a guarantee the loop does not provide.
+ */
 export function describeV4Capabilities(capabilities: V4Capabilities): string {
   if (capabilities.runMode === "RALPH_V3")
     return "run mode RALPH_V3 (V3 orchestration only; Product Anchor/Gate disabled)";
-  const active = [
-    "Product Anchor",
-    "Product Gate",
-    "P0 stop-loss",
-    "V4 chief contract",
-  ];
-  return `run mode RALPH_V4 (V3 orchestration + ${active.join(", ")})`;
+  const enforced = ["Product Anchor", "Product Gate", "P0 stop-loss"];
+  return [
+    `run mode RALPH_V4 (V3 orchestration + ${enforced.join(", ")} enforced by the loop)`,
+    "  V4 chief contract available for the chief flow (the afk loop runs no chief stage)",
+  ].join("\n");
 }

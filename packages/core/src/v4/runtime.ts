@@ -25,6 +25,7 @@ import {
   deriveP0Reprioritisation,
   deriveProductGateRecord,
   evaluateGoalDrift,
+  evaluateSourceProvenance,
   sortIssuesByPriority,
 } from "./policy.js";
 import {
@@ -91,10 +92,20 @@ export async function runV4Round(
   const gate = await runProductGateCommand(
     options.productGateCommand,
     options.workspaceDir,
-    { timeoutMs: options.productGateTimeoutMs }
+    { timeoutMs: options.productGateTimeoutMs ?? productGateTimeoutFromEnv() }
   );
 
-  const issues = gate.payload?.issues ?? [];
+  // An unusable source provenance voids the run's product evidence: a result
+  // produced from a previous generation proves nothing about the source.
+  const provenance = gate.payload?.evidence?.provenance;
+  const provenanceVerdict = evaluateSourceProvenance(provenance);
+  const issues = [...(gate.payload?.issues ?? [])];
+  if (provenanceVerdict.signal === "UAT_INPUT_INVALID")
+    issues.push({
+      priority: "P1",
+      summary: `UAT_INPUT_INVALID: ${provenanceVerdict.reason ?? "source provenance is not usable"}`,
+    });
+
   const productGate = deriveProductGateRecord(issues, gate.payload?.evidence);
   const recentWorkKinds = request.recentWorkKinds ?? [];
   const goalDrift = evaluateGoalDrift({
@@ -164,6 +175,16 @@ export function productGateCommandFromEnv(
 }
 
 export const DEFAULT_V4_RUN_ID = "default";
+
+/** Optional override for how long a Product Gate command may run. */
+export function productGateTimeoutFromEnv(
+  env: Record<string, string | undefined> = process.env
+): number | undefined {
+  const raw = env.RALPH_V4_PRODUCT_GATE_TIMEOUT_MS;
+  if (!raw) return undefined;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
 
 /** The run id V4 persists under; matches the V3 chief-run identity. */
 export function resolveV4RunId(

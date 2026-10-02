@@ -29,11 +29,19 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
-import type {
-  ProductEvidence,
-  ProductIssue,
-  ProductIssue as Issue,
+import {
+  CHECK_SEVERITIES,
+  INSPECTION_AUTHORS,
+  type ProductEvidence,
+  type ProductIssue,
+  type ProductIssue as Issue,
 } from "./domain.js";
+
+const CHECK_OUTCOMES = ["PASS", "FAIL"] as const;
+
+const SEVERITY_SET = new Set<string>(CHECK_SEVERITIES);
+const AUTHOR_SET = new Set<string>(INSPECTION_AUTHORS);
+const OUTCOME_SET = new Set<string>(CHECK_OUTCOMES);
 
 const execAsync = promisify(exec);
 
@@ -65,6 +73,23 @@ function parseIssue(value: unknown): ProductIssue | undefined {
   return value as unknown as Issue;
 }
 
+/**
+ * A check is only usable when every field is one this harness understands. An
+ * unrecognised outcome must not be silently read as "not failing" — that is the
+ * difference between a report we could not parse and a pass.
+ */
+function isIntegrityCheck(value: unknown): boolean {
+  if (!record(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    value.id.trim() !== "" &&
+    typeof value.severity === "string" &&
+    SEVERITY_SET.has(value.severity) &&
+    typeof value.outcome === "string" &&
+    OUTCOME_SET.has(value.outcome)
+  );
+}
+
 /** Strict enough that a malformed gate report never reads as a pass. */
 export function parseProductGatePayload(
   text: string
@@ -81,7 +106,9 @@ export function parseProductGatePayload(
     typeof evidence.artifact_ref !== "string" ||
     typeof evidence.exists !== "boolean" ||
     typeof evidence.inspected_by !== "string" ||
-    !Array.isArray(evidence.checks)
+    !AUTHOR_SET.has(evidence.inspected_by) ||
+    !Array.isArray(evidence.checks) ||
+    !evidence.checks.every(isIntegrityCheck)
   )
     return undefined;
 

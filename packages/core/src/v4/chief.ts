@@ -14,6 +14,11 @@
  * The parser is fail-closed in the same way as `chief.ts`: prose, a missing
  * field or an unknown verdict is rejected outright, so a malformed chief reply
  * can never collapse into a release approval.
+ *
+ * Scope: this is the contract the *chief flow* consumes. The afk loop
+ * (`loop.ts`) enforces the Product Anchor, Product Gate and P0 stop-loss, but
+ * runs no chief stage — so these functions are deliberately not called from
+ * there. Wire them where a chief decision is actually taken.
  */
 
 import {
