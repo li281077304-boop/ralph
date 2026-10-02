@@ -442,3 +442,15 @@ export {
   type ResolveRunModeInput,
   type V4Capabilities,
 } from "./v4/run-mode.js";
+export {
+  V4_ANCHOR_VERSION,
+  V4_ANCHORS_FILENAME,
+  MalformedAnchorRecordError,
+  anchorsPath,
+  emptyAnchorRecord,
+  loadAnchorRecord,
+  saveAnchorRecord,
+  appendAnchor,
+  recordAnchor,
+  type ProductAnchorRecord,
+} from "./v4/anchor-store.js";
