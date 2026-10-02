@@ -21,6 +21,7 @@ import {
   resolveRunMode,
   resolveV4Capabilities,
 } from "./v4/run-mode.js";
+import { productGateCommandFromEnv, resolveV4RunId } from "./v4/runtime.js";
 
 /**
  * Only tokens that actually look like a plan/PRD path are read — a bare word
@@ -147,7 +148,7 @@ export async function runBin(argv: string[], cfg: RunBinConfig): Promise<void> {
   if (capabilities.productAnchor) {
     const preflight = await evaluateV4Preflight({
       workspaceDir,
-      runId: process.env.RALPH_RUN_ID ?? "default",
+      runId: resolveV4RunId(),
     });
     if (preflight.blocked) throw new Error(v4PreflightError(preflight));
   }
@@ -155,6 +156,7 @@ export async function runBin(argv: string[], cfg: RunBinConfig): Promise<void> {
   await runLoop({
     stages: cfg.stages,
     runMode,
+    productGateCommand: productGateCommandFromEnv(),
     inputs: inputs ?? "",
     iterations,
     ralphDir,

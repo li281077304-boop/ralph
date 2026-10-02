@@ -467,3 +467,19 @@ export {
   type V4PreflightInput,
   type V4PreflightResult,
 } from "./v4/preflight.js";
+export {
+  DEFAULT_PRODUCT_GATE_TIMEOUT_MS,
+  parseProductGatePayload,
+  runProductGateCommand,
+  type ProductGatePayload,
+  type ProductGateRunResult,
+} from "./v4/product-gate.js";
+export {
+  DEFAULT_V4_RUN_ID,
+  productGateCommandFromEnv,
+  resolveV4RunId,
+  runV4Round,
+  type V4RuntimeOptions,
+  type V4RoundRequest,
+  type V4RoundOutcome,
+} from "./v4/runtime.js";

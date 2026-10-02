@@ -45,6 +45,7 @@ import {
   resolveV4Capabilities,
   type RunMode,
 } from "./v4/run-mode.js";
+import { resolveV4RunId, runV4Round } from "./v4/runtime.js";
 
 // The agent emits this literal when there is no more work; the same string is
 // mirrored in the playbook templates (prompt.md / ghprompt.md) that instruct it.
@@ -165,6 +166,12 @@ export type LoopOptions = {
    * Product Gate, P0 stop-loss and the V4 chief contract.
    */
   runMode?: RunMode;
+  /**
+   * Project-declared Product Gate command. Under V4 each iteration runs it and
+   * records the verdict; when absent the round is recorded `NOT_RUN`. Ignored
+   * under V3.
+   */
+  productGateCommand?: string;
 };
 
 export async function runLoop(opts: LoopOptions): Promise<void> {
@@ -183,6 +190,7 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
     agent = "claude",
     codexUserConfig = false,
     runMode = DEFAULT_RUN_MODE,
+    productGateCommand,
   } = opts;
 
   if (codexUserConfig && agent !== "codex") {
@@ -196,8 +204,9 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
 
   // V4 is opt-in: announce the rule set that actually activated so an operator
   // can tell a V4 run from a V3 one in the log rather than inferring it.
+  const capabilities = resolveV4Capabilities(runMode);
   if (runMode !== DEFAULT_RUN_MODE) {
-    const activation = describeV4Capabilities(resolveV4Capabilities(runMode));
+    const activation = describeV4Capabilities(capabilities);
     process.stderr.write(`${USE_COLOR ? dim(activation) : activation}\n`);
   }
 
@@ -461,6 +470,36 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
         // means the reviewer would re-review an already-reviewed commit.
         if (s === 0 && headAfter === headBefore) skipHead = headAfter;
       }
+
+      // V4: one product-anchored decision per iteration. Writing the anchor and
+      // the journal here is what advances the durable NOT_RUN counter, so the
+      // anti-drift stop stays live across restarts instead of being advisory.
+      if (capabilities.productAnchor) {
+        const v4 = await runV4Round(
+          {
+            workspaceDir,
+            runId: resolveV4RunId(),
+            productGateCommand,
+          },
+          {
+            round: i,
+            sha: headShort(workspaceDir),
+            machineGate: runFailed ? "FAIL" : "PASS",
+          }
+        );
+        if (v4.productGateError)
+          process.stderr.write(
+            `${USE_COLOR ? dim(v4.productGateError) : v4.productGateError}\n`
+          );
+        if (v4.decision.mustStopExpanding) {
+          const stopReason = v4.decision.stopSignal ?? "product-gate";
+          completedIterations = i;
+          history.appendFooter(i, stopReason, warnSandboxInstall(workspaceDir));
+          printRunSummary(history, stopReason, i, iterations);
+          return;
+        }
+      }
+
       completedIterations = i;
     }
     const reason = runFailed ? "failed" : "cap";
