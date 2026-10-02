@@ -15,7 +15,18 @@ import {
 import { detachAndExit } from "./detach.js";
 import { runLoop } from "./loop.js";
 import type { Stage } from "./stages.js";
-import { RUN_MODE_ENV_VAR, resolveRunMode } from "./v4/run-mode.js";
+import { evaluateV4Preflight, v4PreflightError } from "./v4/preflight.js";
+import {
+  RUN_MODE_ENV_VAR,
+  resolveRunMode,
+  resolveV4Capabilities,
+} from "./v4/run-mode.js";
+
+/**
+ * Only tokens that actually look like a plan/PRD path are read — a bare word
+ * that happens to match a file in the working directory must not be ingested.
+ */
+const PLAN_PATH_HINT = /[\\/]|\.(md|markdown|txt)$/i;
 
 /**
  * The task text a run may carry its `RUN_MODE` declaration in: the inputs
@@ -25,7 +36,7 @@ import { RUN_MODE_ENV_VAR, resolveRunMode } from "./v4/run-mode.js";
 function collectRunModeInputs(inputs: string): string {
   const parts = [inputs];
   for (const candidate of inputs.split(/\s+/)) {
-    if (!candidate) continue;
+    if (!candidate || !PLAN_PATH_HINT.test(candidate)) continue;
     try {
       if (existsSync(candidate)) parts.push(readFileSync(candidate, "utf8"));
     } catch {
@@ -128,6 +139,18 @@ export async function runBin(argv: string[], cfg: RunBinConfig): Promise<void> {
     env: process.env[RUN_MODE_ENV_VAR],
     inputs: collectRunModeInputs(inputs ?? ""),
   });
+
+  // V4 gate: refuse to start another round of development while the product
+  // anchor is overdue. This is the seam where the V4 decision layer actually
+  // affects a run — without it the rule set would be advisory only.
+  const capabilities = resolveV4Capabilities(runMode);
+  if (capabilities.productAnchor) {
+    const preflight = await evaluateV4Preflight({
+      workspaceDir,
+      runId: process.env.RALPH_RUN_ID ?? "default",
+    });
+    if (preflight.blocked) throw new Error(v4PreflightError(preflight));
+  }
 
   await runLoop({
     stages: cfg.stages,

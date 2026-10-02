@@ -216,6 +216,47 @@ describe("V4 chief fail-closed outcome", () => {
     expect(outcome.overall).not.toBe("PASS");
   });
 
+  // The dimension verdicts are evidence-coupled too, not only the release one.
+  it("refuses a PRODUCT PASS when the product gate failed", () => {
+    const outcome = evaluateV4ChiefOutcome(
+      decision({ RELEASE: "PATCH" }),
+      evidence({ product: product("FAIL"), anchor: anchor("FAIL") })
+    );
+    expect(outcome.judgement.PRODUCT).toBe("BLOCKED");
+    expect(outcome.corrected).toBe(true);
+  });
+
+  it("refuses a PRODUCT PASS when an integrity check failed", () => {
+    const failingCheck: ProductGateRecord = {
+      level: "PRODUCT",
+      outcome: "PASS",
+      issues: [],
+      evidence: {
+        artifact_ref: "out/handout.docx",
+        exists: true,
+        checks: [
+          { id: "recursive-template", severity: "error", outcome: "FAIL" },
+        ],
+        inspected_by: "agent",
+      },
+    };
+    const outcome = evaluateV4ChiefOutcome(
+      decision({ RELEASE: "PATCH" }),
+      evidence({ product: failingCheck })
+    );
+    expect(outcome.judgement.PRODUCT).toBe("BLOCKED");
+    expect(outcome.blockers.join(" ")).toContain("recursive-template");
+  });
+
+  it("refuses an ENGINEERING PASS when the machine gate failed", () => {
+    const outcome = evaluateV4ChiefOutcome(
+      decision({ RELEASE: "PATCH" }),
+      evidence({ machine: machine("FAIL") })
+    );
+    expect(outcome.judgement.ENGINEERING).toBe("BLOCKED");
+    expect(outcome.corrected).toBe(true);
+  });
+
   it("never downgrades a stricter chief judgement", () => {
     const outcome = evaluateV4ChiefOutcome(
       decision({ PRODUCT: "PATCH", RELEASE: "PATCH" }),

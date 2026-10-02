@@ -214,11 +214,40 @@ export function evaluateV4ChiefOutcome(
   const hasProductEvidence = Boolean(
     evidence.product.evidence ?? evidence.artifact_ref
   );
+  const failedChecks = (evidence.product.evidence?.checks ?? []).filter(
+    (check) => check.outcome === "FAIL"
+  );
 
-  if (judgement.PRODUCT === "PASS" && !hasProductEvidence) {
-    judgement.PRODUCT = "BLOCKED";
+  // A PASS is only allowed when the evidence itself supports it — presence of
+  // evidence is not the same as evidence of correctness.
+  if (judgement.PRODUCT === "PASS") {
+    if (!hasProductEvidence) {
+      judgement.PRODUCT = "BLOCKED";
+      blockers.push(
+        "PRODUCT PASS refused: no product evidence or artifact reference was available to the chief"
+      );
+      corrected = true;
+    } else if (evidence.product.outcome !== "PASS") {
+      judgement.PRODUCT = "BLOCKED";
+      blockers.push(
+        `PRODUCT PASS refused: the product gate is ${evidence.product.outcome}`
+      );
+      corrected = true;
+    } else if (failedChecks.length > 0) {
+      judgement.PRODUCT = "BLOCKED";
+      blockers.push(
+        `PRODUCT PASS refused: integrity checks failed (${failedChecks
+          .map((check) => check.id)
+          .join(", ")})`
+      );
+      corrected = true;
+    }
+  }
+
+  if (judgement.ENGINEERING === "PASS" && evidence.machine.outcome !== "PASS") {
+    judgement.ENGINEERING = "BLOCKED";
     blockers.push(
-      "PRODUCT PASS refused: no product evidence or artifact reference was available to the chief"
+      `ENGINEERING PASS refused: the MACHINE gate is ${evidence.machine.outcome}`
     );
     corrected = true;
   }

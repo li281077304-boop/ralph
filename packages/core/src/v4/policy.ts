@@ -203,7 +203,14 @@ export interface GoalDriftInput {
  * polishing is exactly the shape of the incident V4 was written for.
  */
 export function evaluateGoalDrift(input: GoalDriftInput): GoalDriftCheck {
-  if (input.productGateOutcome === "PASS") return "PASS";
+  // Only an *unrun* product gate can be drifted away from. Once the gate has
+  // run — pass or fail — the product has genuinely been looked at: a failing
+  // verdict is a known product problem to fix, not drift away from it.
+  if (
+    input.productGateOutcome !== undefined &&
+    input.productGateOutcome !== "NOT_RUN"
+  )
+    return "PASS";
   const work = input.recentWorkKinds;
   if (work.length === 0) return "PASS";
   return work.every(isPeripheral) ? "FAIL" : "PASS";

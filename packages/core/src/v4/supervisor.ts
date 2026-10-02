@@ -44,6 +44,7 @@ export const P0_DEMOTED_PRIORITY_CAP =
   P0_OBLIGATION_PRIORITY - P0_OBLIGATION_CHAIN.length - 1;
 
 const P0_SOURCE = "V4_P0_PRODUCT_CORRUPTION";
+const P0_OBLIGATION_ID_PREFIX = "v4-p0:";
 
 const P0_STEP_DESCRIPTIONS: Record<string, string> = {
   TRACE_PRODUCT_LINEAGE: "trace the artifact lineage to the first contamination point",
@@ -65,12 +66,15 @@ export function p0ChainObligations(
   const kinds = p0CorruptionKinds(issues);
   const detail = kinds.length ? ` (${kinds.join(", ")})` : "";
   return P0_OBLIGATION_CHAIN.map((step, index) => ({
-    id: `v4-p0:${step}`,
+    id: `${P0_OBLIGATION_ID_PREFIX}${step}`,
     source: P0_SOURCE,
     description: `${P0_STEP_DESCRIPTIONS[step] ?? step}${index === 0 ? detail : ""}`,
     status: "RUNNABLE",
     priority: P0_OBLIGATION_PRIORITY - index,
-    dependencies: index === 0 ? [] : [`v4-p0:${P0_OBLIGATION_CHAIN[index - 1]}`],
+    dependencies:
+      index === 0
+        ? []
+        : [`${P0_OBLIGATION_ID_PREFIX}${P0_OBLIGATION_CHAIN[index - 1]}`],
     verification: ["product gate re-run reports PASS on the real artifact"],
     evidence: index === 0 ? kinds.map((kind) => `corruption:${kind}`) : [],
     created_round: round,
@@ -82,17 +86,34 @@ export function p0ChainObligations(
  * On P0 the chain replaces the plan: the five lineage obligations go to the
  * front at an unbeatable priority, and every other obligation is capped below
  * them. Without P0 the list is returned untouched.
+ *
+ * Steps already on the chain keep their recorded progress. Rebuilding them
+ * unconditionally would reset a `PASS` step back to `RUNNABLE`, and since each
+ * step depends on the previous one the selection logic would pick
+ * `TRACE_PRODUCT_LINEAGE` again on every round — the chain would never advance.
  */
 export function reprioritiseObligationsForP0(
   obligations: readonly Obligation[],
   issues: readonly ProductIssue[],
   round: number
 ): Obligation[] {
-  const chain = p0ChainObligations(round, issues);
   if (!deriveP0Reprioritisation(issues).active) return [...obligations];
 
+  const existing = new Map(
+    obligations
+      .filter((item) => item.id.startsWith(P0_OBLIGATION_ID_PREFIX))
+      .map((item) => [item.id, item])
+  );
+  const chain = p0ChainObligations(round, issues).map((step) => {
+    const prior = existing.get(step.id);
+    return prior
+      ? { ...prior, priority: step.priority, updated_round: round }
+      : step;
+  });
+
+  const chainIds = new Set(chain.map((item) => item.id));
   const others = obligations
-    .filter((item) => !P0_OBLIGATION_CHAIN.some((step) => item.id === `v4-p0:${step}`))
+    .filter((item) => !chainIds.has(item.id))
     .map((item) => ({
       ...item,
       priority: Math.min(item.priority ?? 0, P0_DEMOTED_PRIORITY_CAP),

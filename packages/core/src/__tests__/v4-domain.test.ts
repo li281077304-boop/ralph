@@ -174,6 +174,16 @@ describe("V4 goal drift", () => {
     ).toBe("PASS");
   });
 
+  // A gate that ran and failed is a known product problem, not drift.
+  it("does not flag drift when the gate ran and failed", () => {
+    expect(
+      evaluateGoalDrift({
+        recentWorkKinds: [...PERIPHERAL_WORK_KINDS],
+        productGateOutcome: "FAIL",
+      })
+    ).toBe("PASS");
+  });
+
   it("flags drift when recent work is only peripheral", () => {
     expect(
       evaluateGoalDrift({

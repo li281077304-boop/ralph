@@ -90,6 +90,32 @@ describe("V4 P0 obligation restructuring", () => {
       P0_OBLIGATION_CHAIN.length
     );
   });
+
+  // Rebuilding the chain must not reset progress, or the chain can never
+  // advance past its first step.
+  it("preserves the recorded status of steps already on the chain", () => {
+    const started = reprioritiseObligationsForP0(
+      [obligation("task:a")],
+      [P0_ISSUE],
+      1
+    );
+    const advanced = started.map((item) =>
+      item.id === "v4-p0:TRACE_PRODUCT_LINEAGE"
+        ? { ...item, status: "PASS" as const }
+        : item
+    );
+    const next = reprioritiseObligationsForP0(advanced, [P0_ISSUE], 2);
+    const trace = next.find(
+      (item) => item.id === "v4-p0:TRACE_PRODUCT_LINEAGE"
+    );
+    expect(trace?.status).toBe("PASS");
+    expect(next.filter((item) => item.id.startsWith("v4-p0:"))).toHaveLength(
+      P0_OBLIGATION_CHAIN.length
+    );
+    // The remaining steps are still fresh, so the chain can continue.
+    const root = next.find((item) => item.id === "v4-p0:ROOT_CAUSE");
+    expect(root?.status).toBe("RUNNABLE");
+  });
 });
 
 describe("V4 round decision", () => {

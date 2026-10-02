@@ -454,3 +454,16 @@ export {
   recordAnchor,
   type ProductAnchorRecord,
 } from "./v4/anchor-store.js";
+export {
+  V4_JOURNAL_FILENAME,
+  appendJournalEntry,
+  journalPath,
+  readJournal,
+  recordJournalEntry,
+} from "./v4/journal.js";
+export {
+  evaluateV4Preflight,
+  v4PreflightError,
+  type V4PreflightInput,
+  type V4PreflightResult,
+} from "./v4/preflight.js";
