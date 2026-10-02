@@ -406,3 +406,13 @@ export {
   type P0Reprioritisation,
   type BuildJournalInput,
 } from "./v4/policy.js";
+export {
+  P0_OBLIGATION_PRIORITY,
+  P0_DEMOTED_PRIORITY_CAP,
+  evaluateV4Round,
+  isWorkAllowed,
+  p0ChainObligations,
+  reprioritiseObligationsForP0,
+  type V4RoundInput,
+  type V4RoundDecision,
+} from "./v4/supervisor.js";
